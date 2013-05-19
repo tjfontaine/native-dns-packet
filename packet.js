@@ -59,7 +59,7 @@ var isPointer = function(len) {
   return (len & LABEL_POINTER) === LABEL_POINTER;
 };
 
-var name_unpack = function(buff, index) {
+var nameUnpack = function(buff, index) {
   var parts, len, start, pos, i, part, combine = [];
 
   start = buff.tell();
@@ -404,12 +404,138 @@ Packet.write = function(buff, packet) {
   }
 };
 
+function parseHeader(msg, packet, counts) {
+  packet.header.id = msg.readUInt16BE();
+  var val = msg.readUInt16BE();
+  packet.header.qr = (val & 0x8000) >> 15;
+  packet.header.opcode = (val & 0x7800) >> 11;
+  packet.header.aa = (val & 0x400) >> 10;
+  packet.header.tc = (val & 0x200) >> 9;
+  packet.header.rd = (val & 0x100) >> 8;
+  packet.header.ra = (val & 0x80) >> 7;
+  packet.header.res1 = (val & 0x40) >> 6;
+  packet.header.res2 = (val & 0x20) >> 5;
+  packet.header.res3 = (val & 0x10) >> 4;
+  packet.header.rcode = (val & 0xF);
+  counts.qdcount = msg.readUInt16BE();
+  counts.ancount = msg.readUInt16BE();
+  counts.nscount = msg.readUInt16BE();
+  counts.arcount = msg.readUInt16BE();
+  return 'QUESTION';
+}
+
+function parseQuestion(msg, packet, label_index) {
+  var val = {};
+  val.name = nameUnpack(msg, label_index);
+  val.type = msg.readUInt16BE();
+  val.class = msg.readUInt16BE();
+  packet.question.push(val);
+  // TODO handle qdcount > 0 in practice no one sends this
+  return 'RESOURCE_RECORD';
+}
+
+function parseRR(msg, val, rdata, label_index) {
+  val.name = nameUnpack(msg, label_index);
+  val.type = msg.readUInt16BE();
+  val.class = msg.readUInt16BE();
+  val.ttl = msg.readUInt32BE();
+  rdata.len = msg.readUInt16BE();
+  rdata.buf = msg.slice(rdata.len);
+  return consts.QTYPE_TO_NAME[val.type];
+};
+
+function parseA(val, rdata) {
+  var address = '' +
+    rdata.buf.readUInt8() +
+    '.' + rdata.buf.readUInt8() +
+    '.' + rdata.buf.readUInt8() +
+    '.' + rdata.buf.readUInt8();
+  val.address = address;
+  return 'RESOURCE_DONE';
+}
+
+function parseAAAA(val, rdata) {
+  var address = '';
+  var compressed = false;
+
+  for (var i = 0; i < 8; i++) {
+    if (i > 0) address += ':';
+    // TODO zero compression
+    address += rdata.buf.readUInt16BE().toString(16);
+  }
+  val.address = address;
+  return 'RESOURCE_DONE';
+}
+
+function parseCname(val, msg, rdata, label_index) {
+  var pos = msg.tell();
+  msg.seek(pos - rdata.len);
+  val.data = nameUnpack(msg, label_index);
+  msg.seek(pos);
+  return 'RESOURCE_DONE';
+}
+
+function parseTxt(val, rdata) {
+  val.data = '';
+  while (!rdata.buf.eof()) {
+    val.data += rdata.buf.toString('ascii', rdata.buf.readUInt8());
+  }
+  return 'RESOURCE_DONE';
+}
+
+function parseMx(val, msg, rdata, label_index) {
+  val.priority = rdata.buf.readUInt16BE();
+  var pos = msg.tell();
+  msg.seek(pos - rdata.len + rdata.buf.tell());
+  val.exchange = nameUnpack(msg, label_index);
+  msg.seek(pos);
+  return 'RESOURCE_DONE';
+}
+
+function parseSrv(val, msg, rdata, label_index) {
+  val.priority = rdata.buf.readUInt16BE();
+  val.weight = rdata.buf.readUInt16BE();
+  val.port = rdata.buf.readUInt16BE();
+  var pos = msg.tell();
+  msg.seek(pos - rdata.len + rdata.buf.tell());
+  val.target = nameUnpack(msg, label_index);
+  msg.seek(pos);
+  return 'RESOURCE_DONE';
+}
+
+function parseSoa(val, msg, rdata, label_index) {
+  var pos = msg.tell();
+  msg.seek(pos - rdata.len + rdata.buf.tell());
+  val.primary = nameUnpack(msg, label_index);
+  val.admin = nameUnpack(msg, label_index);
+  rdata.buf.seek(msg.tell() - (pos - rdata.len + rdata.buf.tell()));
+  msg.seek(pos);
+  val.serial = rdata.buf.readUInt32BE();
+  val.refresh = rdata.buf.readInt32BE();
+  val.retry = rdata.buf.readInt32BE();
+  val.expiration = rdata.buf.readInt32BE();
+  val.minimum = rdata.buf.readInt32BE();
+  return 'RESOURCE_DONE';
+}
+
+function parseNaptr(val, rdata) {
+  val.order = rdata.buf.readUInt16BE();
+  val.preference = rdata.buf.readUInt16BE();
+  var pos = rdata.buf.readUInt8();
+  val.flags = rdata.buf.toString('ascii', pos);
+  pos = rdata.buf.readUInt8();
+  val.service = rdata.buf.toString('ascii', pos);
+  pos = rdata.buf.readUInt8();
+  val.regexp = rdata.buf.toString('ascii', pos);
+  pos = rdata.buf.readUInt8();
+  val.replacement = rdata.buf.toString('ascii', pos);
+  return 'RESOURCE_DONE';
+}
+
 Packet.parse = function(msg) {
   var state,
-      len,
       pos,
       val,
-      rdata_len,
       rdata,
       label_index = {},
       counts = {},
@@ -422,37 +548,14 @@ Packet.parse = function(msg) {
   state = 'HEADER';
 
   msg = BufferCursor(msg);
-  len = msg.length;
 
   while (true) {
     switch (state) {
       case 'HEADER':
-        packet.header.id = msg.readUInt16BE();
-        val = msg.readUInt16BE();
-        packet.header.qr = (val & 0x8000) >> 15;
-        packet.header.opcode = (val & 0x7800) >> 11;
-        packet.header.aa = (val & 0x400) >> 10;
-        packet.header.tc = (val & 0x200) >> 9;
-        packet.header.rd = (val & 0x100) >> 8;
-        packet.header.ra = (val & 0x80) >> 7;
-        packet.header.res1 = (val & 0x40) >> 6;
-        packet.header.res2 = (val & 0x20) >> 5;
-        packet.header.res3 = (val & 0x10) >> 4;
-        packet.header.rcode = (val & 0xF);
-        counts.qdcount = msg.readUInt16BE();
-        counts.ancount = msg.readUInt16BE();
-        counts.nscount = msg.readUInt16BE();
-        counts.arcount = msg.readUInt16BE();
-        state = 'QUESTION';
+        state = parseHeader(msg, packet, counts);
         break;
       case 'QUESTION':
-        val = {};
-        val.name = name_unpack(msg, label_index);
-        val.type = msg.readUInt16BE();
-        val.class = msg.readUInt16BE();
-        packet.question.push(val);
-        // TODO handle qdcount > 0 in practice no one sends this
-        state = 'RESOURCE_RECORD';
+        state = parseQuestion(msg, packet, label_index);
         section = 'answer';
         count = 'ancount';
         break;
@@ -477,76 +580,36 @@ Packet.parse = function(msg) {
         break;
       case 'RR_UNPACK':
         val = {};
-        val.name = name_unpack(msg, label_index);
-        val.type = msg.readUInt16BE();
-        val.class = msg.readUInt16BE();
-        val.ttl = msg.readUInt32BE();
-        rdata_len = msg.readUInt16BE();
-        rdata = msg.slice(rdata_len);
-        state = consts.QTYPE_TO_NAME[val.type];
+        rdata = {};
+        state = parseRR(msg, val, rdata, label_index);
         break;
       case 'RESOURCE_DONE':
         packet[section].push(val);
         state = 'RESOURCE_RECORD';
         break;
       case 'A':
-        val.address = new ipaddr.IPv4(rdata.toByteArray());
-        val.address = val.address.toString();
-        state = 'RESOURCE_DONE';
+        state = parseA(val, rdata);
         break;
       case 'AAAA':
-        val.address = new ipaddr.IPv6(rdata.toByteArray('readUInt16BE'));
-        val.address = val.address.toString();
-        state = 'RESOURCE_DONE';
+        state = parseAAAA(val, rdata);
         break;
       case 'NS':
       case 'CNAME':
       case 'PTR':
-        pos = msg.tell();
-        msg.seek(pos - rdata_len);
-        val.data = name_unpack(msg, label_index);
-        msg.seek(pos);
-        state = 'RESOURCE_DONE';
+        state = parseCname(val, msg, rdata, label_index);
         break;
       case 'SPF':
       case 'TXT':
-        val.data = '';
-        while (!rdata.eof()) {
-          val.data += rdata.toString('ascii', rdata.readUInt8());
-        }
-        state = 'RESOURCE_DONE';
+        state = parseTxt(val, rdata);
         break;
       case 'MX':
-        val.priority = rdata.readUInt16BE();
-        pos = msg.tell();
-        msg.seek(pos - rdata_len + rdata.tell());
-        val.exchange = name_unpack(msg, label_index);
-        msg.seek(pos);
-        state = 'RESOURCE_DONE';
+        state = parseMx(val, msg, rdata, label_index);
         break;
       case 'SRV':
-        val.priority = rdata.readUInt16BE();
-        val.weight = rdata.readUInt16BE();
-        val.port = rdata.readUInt16BE();
-        pos = msg.tell();
-        msg.seek(pos - rdata_len + rdata.tell());
-        val.target = name_unpack(msg, label_index);
-        msg.seek(pos);
-        state = 'RESOURCE_DONE';
+        state = parseSrv(val, msg, rdata, label_index);
         break;
       case 'SOA':
-        pos = msg.tell();
-        msg.seek(pos - rdata_len + rdata.tell());
-        val.primary = name_unpack(msg, label_index);
-        val.admin = name_unpack(msg, label_index);
-        rdata.seek(msg.tell() - (pos - rdata_len + rdata.tell()));
-        msg.seek(pos);
-        val.serial = rdata.readUInt32BE();
-        val.refresh = rdata.readInt32BE();
-        val.retry = rdata.readInt32BE();
-        val.expiration = rdata.readInt32BE();
-        val.minimum = rdata.readInt32BE();
-        state = 'RESOURCE_DONE';
+        state = parseSoa(val, msg, rdata, label_index);
         break;
       case 'OPT':
         // assert first entry in additional
@@ -559,26 +622,16 @@ Packet.parse = function(msg) {
         val = msg.readUInt16BE();
         msg.seek(pos);
         packet.do = (val & 0x8000) << 15;
-        while (!rdata.eof()) {
+        while (!rdata.buf.eof()) {
           packet.edns_options.push({
-            code: rdata.readUInt16BE(),
-            data: rdata.slice(rdata.readUInt16BE()).buffer
+            code: rdata.buf.readUInt16BE(),
+            data: rdata.buf.slice(rdata.buf.readUInt16BE()).buffer
           });
         }
         state = 'RESOURCE_RECORD';
         break;
       case 'NAPTR':
-        val.order = rdata.readUInt16BE();
-        val.preference = rdata.readUInt16BE();
-        pos = rdata.readUInt8();
-        val.flags = rdata.toString('ascii', pos);
-        pos = rdata.readUInt8();
-        val.service = rdata.toString('ascii', pos);
-        pos = rdata.readUInt8();
-        val.regexp = rdata.toString('ascii', pos);
-        pos = rdata.readUInt8();
-        val.replacement = rdata.toString('ascii', pos);
-        state = 'RESOURCE_DONE';
+        state = parseNaptr(val, rdata);
         break;
       case 'END':
         return packet;
