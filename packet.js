@@ -59,40 +59,41 @@ var isPointer = function(len) {
   return (len & LABEL_POINTER) === LABEL_POINTER;
 };
 
-var nameUnpack = function(buff, index) {
-  var parts, len, start, pos, i, part, combine = [];
+var nameUnpack = function(buff) {
+  var len, comp, end, pos, part, combine = '';
 
-  start = buff.tell();
-
-  parts = [];
   len = buff.readUInt8();
+  comp = false;
 
   while (len !== 0) {
     if (isPointer(len)) {
       len -= LABEL_POINTER;
       len = len << 8;
       pos = len + buff.readUInt8();
-      parts.push({
-        pos: pos,
-        value: index[pos]
-      });
-      len = 0;
-    } else {
-      parts.push({
-        pos: buff.tell() - 1,
-        value: buff.toString('ascii', len)
-      });
+      if (!end)
+        end = buff.tell();
+      buff.seek(pos);
       len = buff.readUInt8();
+      comp = true;
+      continue;
     }
+
+    part = buff.toString('ascii', len);
+
+    if (combine.length)
+      combine = combine + '.' + part;
+    else
+      combine = part;
+
+    len = buff.readUInt8();
+
+    if (!comp)
+      end = buff.tell();
   }
 
-  for (i = parts.length - 1; i >= 0; i--) {
-    part = parts[i];
-    combine.splice(0, 0, part.value);
-    index[part.pos] = combine.join('.');
-  }
+  buff.seek(end);
 
-  return combine.join('.');
+  return combine;
 };
 
 var name_pack = function(str, buff, index) {
@@ -424,9 +425,9 @@ function parseHeader(msg, packet, counts) {
   return 'QUESTION';
 }
 
-function parseQuestion(msg, packet, label_index) {
+function parseQuestion(msg, packet) {
   var val = {};
-  val.name = nameUnpack(msg, label_index);
+  val.name = nameUnpack(msg);
   val.type = msg.readUInt16BE();
   val.class = msg.readUInt16BE();
   packet.question.push(val);
@@ -434,8 +435,8 @@ function parseQuestion(msg, packet, label_index) {
   return 'RESOURCE_RECORD';
 }
 
-function parseRR(msg, val, rdata, label_index) {
-  val.name = nameUnpack(msg, label_index);
+function parseRR(msg, val, rdata) {
+  val.name = nameUnpack(msg);
   val.type = msg.readUInt16BE();
   val.class = msg.readUInt16BE();
   val.ttl = msg.readUInt32BE();
@@ -467,10 +468,10 @@ function parseAAAA(val, rdata) {
   return 'RESOURCE_DONE';
 }
 
-function parseCname(val, msg, rdata, label_index) {
+function parseCname(val, msg, rdata) {
   var pos = msg.tell();
   msg.seek(pos - rdata.len);
-  val.data = nameUnpack(msg, label_index);
+  val.data = nameUnpack(msg);
   msg.seek(pos);
   return 'RESOURCE_DONE';
 }
@@ -483,31 +484,31 @@ function parseTxt(val, rdata) {
   return 'RESOURCE_DONE';
 }
 
-function parseMx(val, msg, rdata, label_index) {
+function parseMx(val, msg, rdata) {
   val.priority = rdata.buf.readUInt16BE();
   var pos = msg.tell();
   msg.seek(pos - rdata.len + rdata.buf.tell());
-  val.exchange = nameUnpack(msg, label_index);
+  val.exchange = nameUnpack(msg);
   msg.seek(pos);
   return 'RESOURCE_DONE';
 }
 
-function parseSrv(val, msg, rdata, label_index) {
+function parseSrv(val, msg, rdata) {
   val.priority = rdata.buf.readUInt16BE();
   val.weight = rdata.buf.readUInt16BE();
   val.port = rdata.buf.readUInt16BE();
   var pos = msg.tell();
   msg.seek(pos - rdata.len + rdata.buf.tell());
-  val.target = nameUnpack(msg, label_index);
+  val.target = nameUnpack(msg);
   msg.seek(pos);
   return 'RESOURCE_DONE';
 }
 
-function parseSoa(val, msg, rdata, label_index) {
+function parseSoa(val, msg, rdata) {
   var pos = msg.tell();
   msg.seek(pos - rdata.len + rdata.buf.tell());
-  val.primary = nameUnpack(msg, label_index);
-  val.admin = nameUnpack(msg, label_index);
+  val.primary = nameUnpack(msg);
+  val.admin = nameUnpack(msg);
   rdata.buf.seek(msg.tell() - (pos - rdata.len + rdata.buf.tell()));
   msg.seek(pos);
   val.serial = rdata.buf.readUInt32BE();
@@ -537,7 +538,6 @@ Packet.parse = function(msg) {
       pos,
       val,
       rdata,
-      label_index = {},
       counts = {},
       section,
       count;
@@ -555,7 +555,7 @@ Packet.parse = function(msg) {
         state = parseHeader(msg, packet, counts);
         break;
       case 'QUESTION':
-        state = parseQuestion(msg, packet, label_index);
+        state = parseQuestion(msg, packet);
         section = 'answer';
         count = 'ancount';
         break;
@@ -581,7 +581,7 @@ Packet.parse = function(msg) {
       case 'RR_UNPACK':
         val = {};
         rdata = {};
-        state = parseRR(msg, val, rdata, label_index);
+        state = parseRR(msg, val, rdata);
         break;
       case 'RESOURCE_DONE':
         packet[section].push(val);
@@ -596,20 +596,20 @@ Packet.parse = function(msg) {
       case 'NS':
       case 'CNAME':
       case 'PTR':
-        state = parseCname(val, msg, rdata, label_index);
+        state = parseCname(val, msg, rdata);
         break;
       case 'SPF':
       case 'TXT':
         state = parseTxt(val, rdata);
         break;
       case 'MX':
-        state = parseMx(val, msg, rdata, label_index);
+        state = parseMx(val, msg, rdata);
         break;
       case 'SRV':
-        state = parseSrv(val, msg, rdata, label_index);
+        state = parseSrv(val, msg, rdata);
         break;
       case 'SOA':
-        state = parseSoa(val, msg, rdata, label_index);
+        state = parseSoa(val, msg, rdata);
         break;
       case 'OPT':
         // assert first entry in additional
