@@ -45,10 +45,10 @@ var Packet = module.exports = function() {
     res3: 0,
     rcode: 0
   };
-  this.question = [];
-  this.answer = [];
-  this.authority = [];
-  this.additional = [];
+  this.question = undefined;
+  this.answer = undefined;
+  this.authority = undefined;
+  this.additional = undefined;
   this.edns_options = [];
   this.payload = undefined;
 };
@@ -418,11 +418,11 @@ function parseHeader(msg, packet, counts) {
   packet.header.res2 = (val & 0x20) >> 5;
   packet.header.res3 = (val & 0x10) >> 4;
   packet.header.rcode = (val & 0xF);
-  counts.qdcount = msg.readUInt16BE();
-  counts.ancount = msg.readUInt16BE();
-  counts.nscount = msg.readUInt16BE();
-  counts.arcount = msg.readUInt16BE();
-  return 'QUESTION';
+  packet.question = new Array(msg.readUInt16BE());
+  packet.answer = new Array(msg.readUInt16BE());
+  packet.authority = new Array(msg.readUInt16BE());
+  packet.additional = new Array(msg.readUInt16BE());
+  return PARSE_QUESTION;
 }
 
 function parseQuestion(msg, packet) {
@@ -430,9 +430,10 @@ function parseQuestion(msg, packet) {
   val.name = nameUnpack(msg);
   val.type = msg.readUInt16BE();
   val.class = msg.readUInt16BE();
-  packet.question.push(val);
+  packet.question[0] = val;
+  assert(packet.question.length === 1);
   // TODO handle qdcount > 0 in practice no one sends this
-  return 'RESOURCE_RECORD';
+  return PARSE_RESOURCE_RECORD;
 }
 
 function parseRR(msg, val, rdata) {
@@ -441,8 +442,7 @@ function parseRR(msg, val, rdata) {
   val.class = msg.readUInt16BE();
   val.ttl = msg.readUInt32BE();
   rdata.len = msg.readUInt16BE();
-  //rdata.buf = msg.slice(rdata.len);
-  return consts.QTYPE_TO_NAME[val.type];
+  return val.type;
 };
 
 function parseA(val, msg) {
@@ -452,7 +452,7 @@ function parseA(val, msg) {
     '.' + msg.readUInt8() +
     '.' + msg.readUInt8();
   val.address = address;
-  return 'RESOURCE_DONE';
+  return PARSE_RESOURCE_DONE;
 }
 
 function parseAAAA(val, msg) {
@@ -465,12 +465,12 @@ function parseAAAA(val, msg) {
     address += msg.readUInt16BE().toString(16);
   }
   val.address = address;
-  return 'RESOURCE_DONE';
+  return PARSE_RESOURCE_DONE;
 }
 
 function parseCname(val, msg) {
   val.data = nameUnpack(msg);
-  return 'RESOURCE_DONE';
+  return PARSE_RESOURCE_DONE;
 }
 
 function parseTxt(val, msg, rdata) {
@@ -479,13 +479,13 @@ function parseTxt(val, msg, rdata) {
   while (msg.tell() != end) {
     val.data += msg.toString('ascii', msg.readUInt8());
   }
-  return 'RESOURCE_DONE';
+  return PARSE_RESOURCE_DONE;
 }
 
 function parseMx(val, msg, rdata) {
   val.priority = msg.readUInt16BE();
   val.exchange = nameUnpack(msg);
-  return 'RESOURCE_DONE';
+  return PARSE_RESOURCE_DONE;
 }
 
 function parseSrv(val, msg) {
@@ -493,7 +493,7 @@ function parseSrv(val, msg) {
   val.weight = msg.readUInt16BE();
   val.port = msg.readUInt16BE();
   val.target = nameUnpack(msg);
-  return 'RESOURCE_DONE';
+  return PARSE_RESOURCE_DONE;
 }
 
 function parseSoa(val, msg) {
@@ -504,7 +504,7 @@ function parseSoa(val, msg) {
   val.retry = msg.readInt32BE();
   val.expiration = msg.readInt32BE();
   val.minimum = msg.readInt32BE();
-  return 'RESOURCE_DONE';
+  return PARSE_RESOURCE_DONE;
 }
 
 function parseNaptr(val, rdata) {
@@ -518,8 +518,29 @@ function parseNaptr(val, rdata) {
   val.regexp = msg.toString('ascii', pos);
   pos = msg.readUInt8();
   val.replacement = msg.toString('ascii', pos);
-  return 'RESOURCE_DONE';
+  return PARSE_RESOURCE_DONE;
 }
+
+var
+  PARSE_HEADER          = 100000,
+  PARSE_QUESTION        = 100001,
+  PARSE_RESOURCE_RECORD = 100002,
+  PARSE_RR_UNPACK       = 100003,
+  PARSE_RESOURCE_DONE   = 100004,
+  PARSE_END             = 100005,
+  PARSE_A     = consts.NAME_TO_QTYPE.A,
+  PARSE_NS    = consts.NAME_TO_QTYPE.NS,
+  PARSE_CNAME = consts.NAME_TO_QTYPE.CNAME,
+  PARSE_SOA   = consts.NAME_TO_QTYPE.SOA,
+  PARSE_PTR   = consts.NAME_TO_QTYPE.PTR,
+  PARSE_MX    = consts.NAME_TO_QTYPE.MX,
+  PARSE_TXT   = consts.NAME_TO_QTYPE.TXT,
+  PARSE_AAAA  = consts.NAME_TO_QTYPE.AAAA,
+  PARSE_SRV   = consts.NAME_TO_QTYPE.SRV,
+  PARSE_NAPTR = consts.NAME_TO_QTYPE.NAPTR,
+  PARSE_OPT   = consts.NAME_TO_QTYPE.OPT,
+  PARSE_SPF   = consts.NAME_TO_QTYPE.SPF;
+  
 
 Packet.parse = function(msg) {
   var state,
@@ -533,73 +554,74 @@ Packet.parse = function(msg) {
   var packet = new Packet();
 
   pos = 0;
-  state = 'HEADER';
+  state = PARSE_HEADER;
 
   msg = BufferCursor(msg);
 
   while (true) {
     switch (state) {
-      case 'HEADER':
+      case PARSE_HEADER:
         state = parseHeader(msg, packet, counts);
         break;
-      case 'QUESTION':
+      case PARSE_QUESTION:
         state = parseQuestion(msg, packet);
         section = 'answer';
-        count = 'ancount';
+        count = 0;
         break;
-      case 'RESOURCE_RECORD':
-        if (counts[count] === packet[section].length) {
+      case PARSE_RESOURCE_RECORD:
+        if (count === packet[section].length) {
           switch (section) {
             case 'answer':
               section = 'authority';
-              count = 'nscount';
+              count = 0;
               break;
             case 'authority':
               section = 'additional';
-              count = 'arcount';
+              count = 0;
               break;
             case 'additional':
-              state = 'END';
+              state = PARSE_END;
               break;
           }
         } else {
-          state = 'RR_UNPACK';
+          state = PARSE_RR_UNPACK;
         }
         break;
-      case 'RR_UNPACK':
+      case PARSE_RR_UNPACK:
         val = {};
         rdata = {};
         state = parseRR(msg, val, rdata);
         break;
-      case 'RESOURCE_DONE':
-        packet[section].push(val);
-        state = 'RESOURCE_RECORD';
+      case PARSE_RESOURCE_DONE:
+        packet[section][count] = val;
+        count++;
+        state = PARSE_RESOURCE_RECORD;
         break;
-      case 'A':
+      case PARSE_A:
         state = parseA(val, msg);
         break;
-      case 'AAAA':
+      case PARSE_AAAA:
         state = parseAAAA(val, msg);
         break;
-      case 'NS':
-      case 'CNAME':
-      case 'PTR':
+      case PARSE_NS:
+      case PARSE_CNAME:
+      case PARSE_PTR:
         state = parseCname(val, msg);
         break;
-      case 'SPF':
-      case 'TXT':
+      case PARSE_SPF:
+      case PARSE_TXT:
         state = parseTxt(val, msg, rdata);
         break;
-      case 'MX':
+      case PARSE_MX:
         state = parseMx(val, msg);
         break;
-      case 'SRV':
+      case PARSE_SRV:
         state = parseSrv(val, msg);
         break;
-      case 'SOA':
+      case PARSE_SOA:
         state = parseSoa(val, msg);
         break;
-      case 'OPT':
+      case PARSE_OPT:
         // assert first entry in additional
         rdata.buf = msg.slice(rdata.len);
         counts[count] -= 1;
@@ -617,18 +639,18 @@ Packet.parse = function(msg) {
             data: rdata.buf.slice(rdata.buf.readUInt16BE()).buffer
           });
         }
-        state = 'RESOURCE_RECORD';
+        state = PARSE_RESOURCE_RECORD;
         break;
-      case 'NAPTR':
+      case PARSE_NAPTR:
         state = parseNaptr(val, msg);
         break;
-      case 'END':
+      case PARSE_END:
         return packet;
         break;
       default:
         //console.log(state, val);
         val.data = msg.slice(rdata.len);
-        state = 'RESOURCE_DONE';
+        state = PARSE_RESOURCE_DONE;
         break;
     }
   }
