@@ -70,7 +70,7 @@ var nameUnpack = function(buff) {
       len -= LABEL_POINTER;
       len = len << 8;
       pos = len + buff.readUInt8();
-      if (!end)
+      if (!comp)
         end = buff.tell();
       buff.seek(pos);
       len = buff.readUInt8();
@@ -441,95 +441,83 @@ function parseRR(msg, val, rdata) {
   val.class = msg.readUInt16BE();
   val.ttl = msg.readUInt32BE();
   rdata.len = msg.readUInt16BE();
-  rdata.buf = msg.slice(rdata.len);
+  //rdata.buf = msg.slice(rdata.len);
   return consts.QTYPE_TO_NAME[val.type];
 };
 
-function parseA(val, rdata) {
+function parseA(val, msg) {
   var address = '' +
-    rdata.buf.readUInt8() +
-    '.' + rdata.buf.readUInt8() +
-    '.' + rdata.buf.readUInt8() +
-    '.' + rdata.buf.readUInt8();
+    msg.readUInt8() +
+    '.' + msg.readUInt8() +
+    '.' + msg.readUInt8() +
+    '.' + msg.readUInt8();
   val.address = address;
   return 'RESOURCE_DONE';
 }
 
-function parseAAAA(val, rdata) {
+function parseAAAA(val, msg) {
   var address = '';
   var compressed = false;
 
   for (var i = 0; i < 8; i++) {
     if (i > 0) address += ':';
     // TODO zero compression
-    address += rdata.buf.readUInt16BE().toString(16);
+    address += msg.readUInt16BE().toString(16);
   }
   val.address = address;
   return 'RESOURCE_DONE';
 }
 
-function parseCname(val, msg, rdata) {
-  var pos = msg.tell();
-  msg.seek(pos - rdata.len);
+function parseCname(val, msg) {
   val.data = nameUnpack(msg);
-  msg.seek(pos);
   return 'RESOURCE_DONE';
 }
 
-function parseTxt(val, rdata) {
+function parseTxt(val, msg, rdata) {
   val.data = '';
-  while (!rdata.buf.eof()) {
-    val.data += rdata.buf.toString('ascii', rdata.buf.readUInt8());
+  var end = msg.tell() + rdata.len;
+  while (msg.tell() != end) {
+    val.data += msg.toString('ascii', msg.readUInt8());
   }
   return 'RESOURCE_DONE';
 }
 
 function parseMx(val, msg, rdata) {
-  val.priority = rdata.buf.readUInt16BE();
-  var pos = msg.tell();
-  msg.seek(pos - rdata.len + rdata.buf.tell());
+  val.priority = msg.readUInt16BE();
   val.exchange = nameUnpack(msg);
-  msg.seek(pos);
   return 'RESOURCE_DONE';
 }
 
-function parseSrv(val, msg, rdata) {
-  val.priority = rdata.buf.readUInt16BE();
-  val.weight = rdata.buf.readUInt16BE();
-  val.port = rdata.buf.readUInt16BE();
-  var pos = msg.tell();
-  msg.seek(pos - rdata.len + rdata.buf.tell());
+function parseSrv(val, msg) {
+  val.priority = msg.readUInt16BE();
+  val.weight = msg.readUInt16BE();
+  val.port = msg.readUInt16BE();
   val.target = nameUnpack(msg);
-  msg.seek(pos);
   return 'RESOURCE_DONE';
 }
 
-function parseSoa(val, msg, rdata) {
-  var pos = msg.tell();
-  msg.seek(pos - rdata.len + rdata.buf.tell());
+function parseSoa(val, msg) {
   val.primary = nameUnpack(msg);
   val.admin = nameUnpack(msg);
-  rdata.buf.seek(msg.tell() - (pos - rdata.len + rdata.buf.tell()));
-  msg.seek(pos);
-  val.serial = rdata.buf.readUInt32BE();
-  val.refresh = rdata.buf.readInt32BE();
-  val.retry = rdata.buf.readInt32BE();
-  val.expiration = rdata.buf.readInt32BE();
-  val.minimum = rdata.buf.readInt32BE();
+  val.serial = msg.readUInt32BE();
+  val.refresh = msg.readInt32BE();
+  val.retry = msg.readInt32BE();
+  val.expiration = msg.readInt32BE();
+  val.minimum = msg.readInt32BE();
   return 'RESOURCE_DONE';
 }
 
 function parseNaptr(val, rdata) {
-  val.order = rdata.buf.readUInt16BE();
-  val.preference = rdata.buf.readUInt16BE();
-  var pos = rdata.buf.readUInt8();
-  val.flags = rdata.buf.toString('ascii', pos);
-  pos = rdata.buf.readUInt8();
-  val.service = rdata.buf.toString('ascii', pos);
-  pos = rdata.buf.readUInt8();
-  val.regexp = rdata.buf.toString('ascii', pos);
-  pos = rdata.buf.readUInt8();
-  val.replacement = rdata.buf.toString('ascii', pos);
+  val.order = msg.readUInt16BE();
+  val.preference = msg.readUInt16BE();
+  var pos = msg.readUInt8();
+  val.flags = msg.toString('ascii', pos);
+  pos = msg.readUInt8();
+  val.service = msg.toString('ascii', pos);
+  pos = msg.readUInt8();
+  val.regexp = msg.toString('ascii', pos);
+  pos = msg.readUInt8();
+  val.replacement = msg.toString('ascii', pos);
   return 'RESOURCE_DONE';
 }
 
@@ -588,31 +576,32 @@ Packet.parse = function(msg) {
         state = 'RESOURCE_RECORD';
         break;
       case 'A':
-        state = parseA(val, rdata);
+        state = parseA(val, msg);
         break;
       case 'AAAA':
-        state = parseAAAA(val, rdata);
+        state = parseAAAA(val, msg);
         break;
       case 'NS':
       case 'CNAME':
       case 'PTR':
-        state = parseCname(val, msg, rdata);
+        state = parseCname(val, msg);
         break;
       case 'SPF':
       case 'TXT':
-        state = parseTxt(val, rdata);
+        state = parseTxt(val, msg, rdata);
         break;
       case 'MX':
-        state = parseMx(val, msg, rdata);
+        state = parseMx(val, msg);
         break;
       case 'SRV':
-        state = parseSrv(val, msg, rdata);
+        state = parseSrv(val, msg);
         break;
       case 'SOA':
-        state = parseSoa(val, msg, rdata);
+        state = parseSoa(val, msg);
         break;
       case 'OPT':
         // assert first entry in additional
+        rdata.buf = msg.slice(rdata.len);
         counts[count] -= 1;
         packet.payload = val.class;
         pos = msg.tell();
@@ -631,13 +620,14 @@ Packet.parse = function(msg) {
         state = 'RESOURCE_RECORD';
         break;
       case 'NAPTR':
-        state = parseNaptr(val, rdata);
+        state = parseNaptr(val, msg);
         break;
       case 'END':
         return packet;
         break;
       default:
         //console.log(state, val);
+        val.data = msg.slice(rdata.len);
         state = 'RESOURCE_DONE';
         break;
     }
