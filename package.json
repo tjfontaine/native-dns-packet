@@ -1,6 +1,6 @@
 {
   "name": "native-dns-packet",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "author": "Timothy J Fontaine <tjfontaine@gmail.com> (http://atxconsulting.com)",
   "description": "Raw DNS Packet Parsing and Writing",
   "keywords": [ "dns", "parsing" ],
