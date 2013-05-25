@@ -124,6 +124,34 @@ var name_pack = function(str, buff, index) {
   }
 };
 
+var
+  WRITE_HEADER              = 100001,
+  WRITE_TRUNCATE            = 100002,
+  WRITE_NAME_PACK           = 100003,
+  WRITE_QUESTION            = 100004,
+  WRITE_QUESTION_NEXT       = 100005,
+  WRITE_RESOURCE_RECORD     = 100006,
+  WRITE_RESOURCE_WRITE      = 100007,
+  WRITE_RESOURCE_WRITE_NEXT = 100008,
+  WRITE_RESOURCE_DONE       = 100009,
+  WRITE_RESOURCE_END        = 100010,
+  WRITE_SOA_NEXT            = 100011,
+  WRITE_SOA_ADMIN           = 100012,
+  WRITE_EDNS                = 100013,
+  WRITE_END                 = 100014,
+  WRITE_A     = consts.NAME_TO_QTYPE.A,
+  WRITE_AAAA  = consts.NAME_TO_QTYPE.AAAA,
+  WRITE_NS    = consts.NAME_TO_QTYPE.NS,
+  WRITE_CNAME = consts.NAME_TO_QTYPE.CNAME,
+  WRITE_PTR   = consts.NAME_TO_QTYPE.PTR,
+  WRITE_SPF   = consts.NAME_TO_QTYPE.SPF,
+  WRITE_MX    = consts.NAME_TO_QTYPE.MX,
+  WRITE_SRV   = consts.NAME_TO_QTYPE.SRV,
+  WRITE_TXT   = consts.NAME_TO_QTYPE.TXT,
+  WRITE_SOA   = consts.NAME_TO_QTYPE.SOA,
+  WRITE_OPT   = consts.NAME_TO_QTYPE.OPT,
+  WRITE_NAPTR = consts.NAME_TO_QTYPE.NAPTR;
+
 Packet.write = function(buff, packet) {
   var state,
       next,
@@ -139,15 +167,15 @@ Packet.write = function(buff, packet) {
   buff = BufferCursor(buff);
 
   if (typeof(packet.edns_version) !== 'undefined') {
-    state = 'EDNS';
+    state = WRITE_EDNS;
   } else {
-    state = 'HEADER';
+    state = WRITE_HEADER;
   }
 
   while (true) {
     try {
       switch (state) {
-        case 'EDNS':
+        case WRITE_EDNS:
           val = {
             name: '',
             type: consts.NAME_TO_QTYPE.OPT,
@@ -159,9 +187,9 @@ Packet.write = function(buff, packet) {
           val.ttl = (val.ttl << 8) + packet.edns_version;
           val.ttl = (val.ttl << 16) + (packet.do << 15) & 0x8000;
           packet.additional.splice(0, 0, val);
-          state = 'HEADER';
+          state = WRITE_HEADER;
           break;
-        case 'HEADER':
+        case WRITE_HEADER:
           assert(packet.header, 'Packet requires "header"');
           buff.writeUInt16BE(packet.header.id & 0xFFFF);
           val = 0;
@@ -185,9 +213,9 @@ Packet.write = function(buff, packet) {
           buff.writeUInt16BE(packet.authority.length & 0xFFFF);
           // additional offset 10
           buff.writeUInt16BE(packet.additional.length & 0xFFFF);
-          state = 'QUESTION';
+          state = WRITE_QUESTION;
           break;
-        case 'TRUNCATE':
+        case WRITE_TRUNCATE:
           buff.seek(2);
           val = buff.readUInt16BE();
           val |= (1 << 9) & 0x200;
@@ -214,58 +242,58 @@ Packet.write = function(buff, packet) {
           buff.seek(pos);
           buff.writeUInt16BE(count - 1);
           buff.seek(last_resource);
-          state = 'END';
+          state = WRITE_END;
           break;
-        case 'NAME_PACK':
+        case WRITE_NAME_PACK:
           name_pack(name, buff, label_index);
           state = next;
           break;
-        case 'QUESTION':
+        case WRITE_QUESTION:
           val = packet.question[0];
           assert(val, 'Packet requires a question');
           assertUndefined(val.name, 'Question requires a "name"');
           name = val.name;
-          state = 'NAME_PACK';
-          next = 'QUESTION_NEXT';
+          state = WRITE_NAME_PACK;
+          next = WRITE_QUESTION_NEXT;
           break;
-        case 'QUESTION_NEXT':
+        case WRITE_QUESTION_NEXT:
           assertUndefined(val.type, 'Question requires a "type"');
           assertUndefined(val.class, 'Questionn requires a "class"');
           buff.writeUInt16BE(val.type & 0xFFFF);
           buff.writeUInt16BE(val.class & 0xFFFF);
-          state = 'RESOURCE_RECORD';
+          state = WRITE_RESOURCE_RECORD;
           section = 'answer';
           count = 0;
           break;
-        case 'RESOURCE_RECORD':
+        case WRITE_RESOURCE_RECORD:
           last_resource = buff.tell();
           if (packet[section].length == count) {
             switch (section) {
               case 'answer':
                 section = 'authority';
-                state = 'RESOURCE_RECORD';
+                state = WRITE_RESOURCE_RECORD;
                 break;
               case 'authority':
                 section = 'additional';
-                state = 'RESOURCE_RECORD';
+                state = WRITE_RESOURCE_RECORD;
                 break;
               case 'additional':
-                state = 'END';
+                state = WRITE_END;
                 break;
             }
             count = 0;
           } else {
-            state = 'RESOURCE_WRITE';
+            state = WRITE_RESOURCE_WRITE;
           }
           break;
-        case 'RESOURCE_WRITE':
+        case WRITE_RESOURCE_WRITE:
           val = packet[section][count];
           assertUndefined(val.name, 'Resource record requires "name"');
           name = val.name;
-          state = 'NAME_PACK';
-          next = 'RESOURCE_WRITE_NEXT';
+          state = WRITE_NAME_PACK;
+          next = WRITE_RESOURCE_WRITE_NEXT;
           break;
-        case 'RESOURCE_WRITE_NEXT':
+        case WRITE_RESOURCE_WRITE_NEXT:
           assertUndefined(val.type, 'Resource record requires "type"');
           assertUndefined(val.class, 'Resource record requires "class"');
           assertUndefined(val.ttl, 'Resource record requires "ttl"');
@@ -277,51 +305,51 @@ Packet.write = function(buff, packet) {
           rdata_pos = buff.tell();
           buff.writeUInt16BE(0);
 
-          state = consts.QTYPE_TO_NAME[val.type];
+          state = val.type;
           break;
-        case 'RESOURCE_DONE':
+        case WRITE_RESOURCE_DONE:
           pos = buff.tell();
           buff.seek(rdata_pos);
           buff.writeUInt16BE(pos - rdata_pos - 2);
           buff.seek(pos);
           count += 1;
-          state = 'RESOURCE_RECORD';
+          state = WRITE_RESOURCE_RECORD;
           break;
-        case 'A':
-        case 'AAAA':
+        case WRITE_A:
+        case WRITE_AAAA:
           //TODO XXX FIXME -- assert that address is of proper type
           assertUndefined(val.address, 'A/AAAA record requires "address"');
           val = ipaddr.parse(val.address).toByteArray();
           val.forEach(function(b) {
             buff.writeUInt8(b);
           });
-          state = 'RESOURCE_DONE';
+          state = WRITE_RESOURCE_DONE;
           break;
-        case 'NS':
-        case 'CNAME':
-        case 'PTR':
+        case WRITE_NS:
+        case WRITE_CNAME:
+        case WRITE_PTR:
           assertUndefined(val.data, 'NS/CNAME/PTR record requires "data"');
           name = val.data;
-          state = 'NAME_PACK';
-          next = 'RESOURCE_DONE';
+          state = WRITE_NAME_PACK;
+          next = WRITE_RESOURCE_DONE;
           break;
-        case 'SPF':
-        case 'TXT':
+        case WRITE_SPF:
+        case WRITE_TXT:
           //TODO XXX FIXME -- split on max char string and loop
           assertUndefined(val.data, 'TXT record requires "data"');
           buff.writeUInt8(val.data.length);
           buff.write(val.data, val.data.length, 'ascii');
-          state = 'RESOURCE_DONE';
+          state = WRITE_RESOURCE_DONE;
           break;
-        case 'MX':
+        case WRITE_MX:
           assertUndefined(val.priority, 'MX record requires "priority"');
           assertUndefined(val.exchange, 'MX record requires "exchange"');
           buff.writeUInt16BE(val.priority & 0xFFFF);
           name = val.exchange;
-          state = 'NAME_PACK';
-          next = 'RESOURCE_DONE';
+          state = WRITE_NAME_PACK;
+          next = WRITE_RESOURCE_DONE;
           break;
-        case 'SRV':
+        case WRITE_SRV:
           assertUndefined(val.priority, 'SRV record requires "priority"');
           assertUndefined(val.weight, 'SRV record requires "weight"');
           assertUndefined(val.port, 'SRV record requires "port"');
@@ -330,22 +358,22 @@ Packet.write = function(buff, packet) {
           buff.writeUInt16BE(val.weight & 0xFFFF);
           buff.writeUInt16BE(val.port & 0xFFFF);
           name = val.target;
-          state = 'NAME_PACK';
-          next = 'RESOURCE_DONE';
+          state = WRITE_NAME_PACK;
+          next = WRITE_RESOURCE_DONE;
           break;
-        case 'SOA':
+        case WRITE_SOA:
           assertUndefined(val.primary, 'SOA record requires "primary"');
           name = val.primary;
-          state = 'NAME_PACK';
-          next = 'SOA_ADMIN';
+          state = WRITE_NAME_PACK;
+          next = WRITE_SOA_ADMIN;
           break;
-        case 'SOA_ADMIN':
+        case WRITE_SOA_ADMIN:
           assertUndefined(val.admin, 'SOA record requires "admin"');
           name = val.admin;
-          state = 'NAME_PACK';
-          next = 'SOA_NEXT';
+          state = WRITE_NAME_PACK;
+          next = WRITE_SOA_NEXT;
           break;
-        case 'SOA_NEXT':
+        case WRITE_SOA_NEXT:
           assertUndefined(val.serial, 'SOA record requires "serial"');
           assertUndefined(val.refresh, 'SOA record requires "refresh"');
           assertUndefined(val.retry, 'SOA record requires "retry"');
@@ -356,9 +384,9 @@ Packet.write = function(buff, packet) {
           buff.writeInt32BE(val.retry & 0xFFFFFFFF);
           buff.writeInt32BE(val.expiration & 0xFFFFFFFF);
           buff.writeInt32BE(val.minimum & 0xFFFFFFFF);
-          state = 'RESOURCE_DONE';
+          state = WRITE_RESOURCE_DONE;
           break;
-        case 'OPT':
+        case WRITE_OPT:
           while (packet.edns_options.length) {
             val = packet.edns_options.pop();
             buff.writeUInt16BE(val.code);
@@ -367,9 +395,9 @@ Packet.write = function(buff, packet) {
               buff.writeUInt8(val.data.readUInt8(pos));
             }
           }
-          state = 'RESOURCE_DONE';
+          state = WRITE_RESOURCE_DONE;
           break;
-        case 'NAPTR':
+        case WRITE_NAPTR:
           assertUndefined(val.order, 'NAPTR record requires "order"');
           assertUndefined(val.preference, 'NAPTR record requires "preference"');
           assertUndefined(val.flags, 'NAPTR record requires "flags"');
@@ -386,9 +414,9 @@ Packet.write = function(buff, packet) {
           buff.write(val.regexp, val.regexp.length, 'ascii');
           buff.writeUInt8(val.replacement.length);
           buff.write(val.replacement, val.replacement.length, 'ascii');
-          state = 'RESOURCE_DONE';
+          state = WRITE_RESOURCE_DONE;
           break;
-        case 'END':
+        case WRITE_END:
           return buff.tell();
           break;
         default:
@@ -397,7 +425,7 @@ Packet.write = function(buff, packet) {
       }
     } catch (e) {
       if (e instanceof BufferCursorOverflow) {
-        state = 'TRUNCATE';
+        state = WRITE_TRUNCATE;
       } else {
         throw e;
       }
