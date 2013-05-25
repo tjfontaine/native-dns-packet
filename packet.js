@@ -127,18 +127,13 @@ function namePack(str, buff, index) {
 var
   WRITE_HEADER              = 100001,
   WRITE_TRUNCATE            = 100002,
-  WRITE_NAME_PACK           = 100003,
-  WRITE_QUESTION            = 100004,
-  WRITE_QUESTION_NEXT       = 100005,
-  WRITE_RESOURCE_RECORD     = 100006,
-  WRITE_RESOURCE_WRITE      = 100007,
-  WRITE_RESOURCE_WRITE_NEXT = 100008,
-  WRITE_RESOURCE_DONE       = 100009,
-  WRITE_RESOURCE_END        = 100010,
-  WRITE_SOA_NEXT            = 100011,
-  WRITE_SOA_ADMIN           = 100012,
-  WRITE_EDNS                = 100013,
-  WRITE_END                 = 100014,
+  WRITE_QUESTION            = 100003,
+  WRITE_RESOURCE_RECORD     = 100004,
+  WRITE_RESOURCE_WRITE      = 100005,
+  WRITE_RESOURCE_DONE       = 100006,
+  WRITE_RESOURCE_END        = 100007,
+  WRITE_EDNS                = 100008,
+  WRITE_END                 = 100009,
   WRITE_A     = consts.NAME_TO_QTYPE.A,
   WRITE_AAAA  = consts.NAME_TO_QTYPE.AAAA,
   WRITE_NS    = consts.NAME_TO_QTYPE.NS,
@@ -152,15 +147,229 @@ var
   WRITE_OPT   = consts.NAME_TO_QTYPE.OPT,
   WRITE_NAPTR = consts.NAME_TO_QTYPE.NAPTR;
 
+function writeHeader(buff, packet) {
+  assert(packet.header, 'Packet requires "header"');
+  buff.writeUInt16BE(packet.header.id & 0xFFFF);
+  var val = 0;
+  val += (packet.header.qr << 15) & 0x8000;
+  val += (packet.header.opcode << 11) & 0x7800;
+  val += (packet.header.aa << 10) & 0x400;
+  val += (packet.header.tc << 9) & 0x200;
+  val += (packet.header.rd << 8) & 0x100;
+  val += (packet.header.ra << 7) & 0x80;
+  val += (packet.header.res1 << 6) & 0x40;
+  val += (packet.header.res1 << 5) & 0x20;
+  val += (packet.header.res1 << 4) & 0x10;
+  val += packet.header.rcode & 0xF;
+  buff.writeUInt16BE(val & 0xFFFF);
+  assert(packet.question.length == 1, 'DNS requires one question');
+  // aren't used
+  buff.writeUInt16BE(1);
+  // answer offset 6
+  buff.writeUInt16BE(packet.answer.length & 0xFFFF);
+  // authority offset 8
+  buff.writeUInt16BE(packet.authority.length & 0xFFFF);
+  // additional offset 10
+  buff.writeUInt16BE(packet.additional.length & 0xFFFF);
+  return WRITE_QUESTION;
+}
+
+function writeTruncate(buff, packet, section, val) {
+  // XXX FIXME TODO truncation is currently done wrong.
+  // Quote rfc2181 section 9
+  // The TC bit should not be set merely because some extra information
+  // could have been included, but there was insufficient room.  This
+  // includes the results of additional section processing.  In such cases
+  // the entire RRSet that will not fit in the response should be omitted,
+  // and the reply sent as is, with the TC bit clear.  If the recipient of
+  // the reply needs the omitted data, it can construct a query for that
+  // data and send that separately.
+  //
+  // TODO IOW only set TC if we hit it in ANSWERS otherwise make sure an
+  // entire RRSet is removed during a truncation.
+  var pos, val;
+
+  buff.seek(2);
+  val = buff.readUInt16BE();
+  val |= (1 << 9) & 0x200;
+  buff.seek(2);
+  buff.writeUInt16BE(val);
+  switch (section) {
+    case 'answer':
+      pos = 6;
+      // seek to authority and clear it and additional out
+      buff.seek(8);
+      buff.writeUInt16BE(0);
+      buff.writeUInt16BE(0);
+      break;
+    case 'authority':
+      pos = 8;
+      // seek to additional and clear it out
+      buff.seek(10);
+      buff.writeUInt16BE(0);
+      break;
+    case 'additional':
+      pos = 10;
+      break;
+  }
+  buff.seek(pos);
+  buff.writeUInt16BE(count - 1);
+  buff.seek(last_resource);
+  return WRITE_END;
+}
+
+function writeQuestion(buff, val, label_index) {
+  assert(val, 'Packet requires a question');
+  assertUndefined(val.name, 'Question requires a "name"');
+  assertUndefined(val.type, 'Question requires a "type"');
+  assertUndefined(val.class, 'Questionn requires a "class"');
+  namePack(val.name, buff, label_index);
+  buff.writeUInt16BE(val.type & 0xFFFF);
+  buff.writeUInt16BE(val.class & 0xFFFF);
+  return WRITE_RESOURCE_RECORD;
+}
+
+function writeResource(buff, val, label_index, rdata) {
+  assert(val, 'Resource must be defined');
+  assertUndefined(val.name, 'Resource record requires "name"');
+  assertUndefined(val.type, 'Resource record requires "type"');
+  assertUndefined(val.class, 'Resource record requires "class"');
+  assertUndefined(val.ttl, 'Resource record requires "ttl"');
+  namePack(val.name, buff, label_index);
+  buff.writeUInt16BE(val.type & 0xFFFF);
+  buff.writeUInt16BE(val.class & 0xFFFF);
+  buff.writeUInt32BE(val.ttl & 0xFFFFFFFF);
+  rdata.pos = buff.tell();
+  buff.writeUInt16BE(0);
+  return val.type;
+}
+
+function writeResourceDone(buff, rdata) {
+  var pos = buff.tell();
+  buff.seek(rdata.pos);
+  buff.writeUInt16BE(pos - rdata.pos - 2);
+  buff.seek(pos);
+  return WRITE_RESOURCE_RECORD;
+}
+
+function writeIp(buff, val) {
+  //TODO XXX FIXME -- assert that address is of proper type
+  assertUndefined(val.address, 'A/AAAA record requires "address"');
+  val = ipaddr.parse(val.address).toByteArray();
+  val.forEach(function(b) {
+    buff.writeUInt8(b);
+  });
+  return WRITE_RESOURCE_DONE;
+}
+
+function writeCname(buff, val, label_index) {
+  assertUndefined(val.data, 'NS/CNAME/PTR record requires "data"');
+  namePack(val.data, buff, label_index);
+  return WRITE_RESOURCE_DONE;
+}
+
+function writeTxt(buff, val) {
+  //TODO XXX FIXME -- split on max char string and loop
+  assertUndefined(val.data, 'TXT record requires "data"');
+  buff.writeUInt8(val.data.length);
+  buff.write(val.data, val.data.length, 'ascii');
+  return WRITE_RESOURCE_DONE;
+}
+
+function writeMx(buff, val, label_index) {
+  assertUndefined(val.priority, 'MX record requires "priority"');
+  assertUndefined(val.exchange, 'MX record requires "exchange"');
+  buff.writeUInt16BE(val.priority & 0xFFFF);
+  namePack(val.exchange, buff, label_index);
+  return WRITE_RESOURCE_DONE;
+}
+
+function writeSrv(buff, val, label_index) {
+  assertUndefined(val.priority, 'SRV record requires "priority"');
+  assertUndefined(val.weight, 'SRV record requires "weight"');
+  assertUndefined(val.port, 'SRV record requires "port"');
+  assertUndefined(val.target, 'SRV record requires "target"');
+  buff.writeUInt16BE(val.priority & 0xFFFF);
+  buff.writeUInt16BE(val.weight & 0xFFFF);
+  buff.writeUInt16BE(val.port & 0xFFFF);
+  namePack(val.target, buff, label_index);
+  return WRITE_RESOURCE_DONE;
+}
+
+function writeSoa(buff, val, label_index) {
+  assertUndefined(val.primary, 'SOA record requires "primary"');
+  assertUndefined(val.admin, 'SOA record requires "admin"');
+  assertUndefined(val.serial, 'SOA record requires "serial"');
+  assertUndefined(val.refresh, 'SOA record requires "refresh"');
+  assertUndefined(val.retry, 'SOA record requires "retry"');
+  assertUndefined(val.expiration, 'SOA record requires "expiration"');
+  assertUndefined(val.minimum, 'SOA record requires "minimum"');
+  namePack(val.primary, buff, label_index);
+  namePack(val.admin, buff, label_index);
+  buff.writeUInt32BE(val.serial & 0xFFFFFFFF);
+  buff.writeInt32BE(val.refresh & 0xFFFFFFFF);
+  buff.writeInt32BE(val.retry & 0xFFFFFFFF);
+  buff.writeInt32BE(val.expiration & 0xFFFFFFFF);
+  buff.writeInt32BE(val.minimum & 0xFFFFFFFF);
+  return WRITE_RESOURCE_DONE;
+}
+
+function writeNaptr(buff, val) {
+  assertUndefined(val.order, 'NAPTR record requires "order"');
+  assertUndefined(val.preference, 'NAPTR record requires "preference"');
+  assertUndefined(val.flags, 'NAPTR record requires "flags"');
+  assertUndefined(val.service, 'NAPTR record requires "service"');
+  assertUndefined(val.regexp, 'NAPTR record requires "regexp"');
+  assertUndefined(val.replacement, 'NAPTR record requires "replacement"');
+  buff.writeUInt16BE(val.order & 0xFFFF);
+  buff.writeUInt16BE(val.preference & 0xFFFF);
+  buff.writeUInt8(val.flags.length);
+  buff.write(val.flags, val.flags.length, 'ascii');
+  buff.writeUInt8(val.service.length);
+  buff.write(val.service, val.service.length, 'ascii');
+  buff.writeUInt8(val.regexp.length);
+  buff.write(val.regexp, val.regexp.length, 'ascii');
+  buff.writeUInt8(val.replacement.length);
+  buff.write(val.replacement, val.replacement.length, 'ascii');
+  return WRITE_RESOURCE_DONE;
+}
+
+function writeEnds(packet) {
+  var val = {
+    name: '',
+    type: consts.NAME_TO_QTYPE.OPT,
+    class: packet.payload
+  };
+  var pos = packet.header.rcode;
+  val.ttl = packet.header.rcode >> 4;
+  packet.header.rcode = pos - (val.ttl << 4);
+  val.ttl = (val.ttl << 8) + packet.edns_version;
+  val.ttl = (val.ttl << 16) + (packet.do << 15) & 0x8000;
+  packet.additional.splice(0, 0, val);
+  return WRITE_HEADER;
+}
+
+function writeOpt(buff, packet) {
+  var pos;
+
+  while (packet.edns_options.length) {
+    val = packet.edns_options.pop();
+    buff.writeUInt16BE(val.code);
+    buff.writeUInt16BE(val.data.length);
+    for (pos = 0; pos < val.data.length; pos++) {
+      buff.writeUInt8(val.data.readUInt8(pos));
+    }
+  }
+
+  return WRITE_RESOURCE_DONE;
+}
+
 Packet.write = function(buff, packet) {
   var state,
-      next,
-      name,
       val,
       section,
       count,
-      pos,
-      rdata_pos,
+      rdata,
       last_resource,
       label_index = {};
 
@@ -176,92 +385,16 @@ Packet.write = function(buff, packet) {
     try {
       switch (state) {
         case WRITE_EDNS:
-          val = {
-            name: '',
-            type: consts.NAME_TO_QTYPE.OPT,
-            class: packet.payload
-          };
-          pos = packet.header.rcode;
-          val.ttl = packet.header.rcode >> 4;
-          packet.header.rcode = pos - (val.ttl << 4);
-          val.ttl = (val.ttl << 8) + packet.edns_version;
-          val.ttl = (val.ttl << 16) + (packet.do << 15) & 0x8000;
-          packet.additional.splice(0, 0, val);
-          state = WRITE_HEADER;
+          state = writeEns(packet);
           break;
         case WRITE_HEADER:
-          assert(packet.header, 'Packet requires "header"');
-          buff.writeUInt16BE(packet.header.id & 0xFFFF);
-          val = 0;
-          val += (packet.header.qr << 15) & 0x8000;
-          val += (packet.header.opcode << 11) & 0x7800;
-          val += (packet.header.aa << 10) & 0x400;
-          val += (packet.header.tc << 9) & 0x200;
-          val += (packet.header.rd << 8) & 0x100;
-          val += (packet.header.ra << 7) & 0x80;
-          val += (packet.header.res1 << 6) & 0x40;
-          val += (packet.header.res1 << 5) & 0x20;
-          val += (packet.header.res1 << 4) & 0x10;
-          val += packet.header.rcode & 0xF;
-          buff.writeUInt16BE(val & 0xFFFF);
-          // TODO assert on question.length > 1, in practice multiple questions
-          // aren't used
-          buff.writeUInt16BE(1);
-          // answer offset 6
-          buff.writeUInt16BE(packet.answer.length & 0xFFFF);
-          // authority offset 8
-          buff.writeUInt16BE(packet.authority.length & 0xFFFF);
-          // additional offset 10
-          buff.writeUInt16BE(packet.additional.length & 0xFFFF);
-          state = WRITE_QUESTION;
+          state = writeHeader(buff, packet);
           break;
         case WRITE_TRUNCATE:
-          buff.seek(2);
-          val = buff.readUInt16BE();
-          val |= (1 << 9) & 0x200;
-          buff.seek(2);
-          buff.writeUInt16BE(val);
-          switch (section) {
-            case 'answer':
-              pos = 6;
-              // seek to authority and clear it and additional out
-              buff.seek(8);
-              buff.writeUInt16BE(0);
-              buff.writeUInt16BE(0);
-              break;
-            case 'authority':
-              pos = 8;
-              // seek to additional and clear it out
-              buff.seek(10);
-              buff.writeUInt16BE(0);
-              break;
-            case 'additional':
-              pos = 10;
-              break;
-          }
-          buff.seek(pos);
-          buff.writeUInt16BE(count - 1);
-          buff.seek(last_resource);
-          state = WRITE_END;
-          break;
-        case WRITE_NAME_PACK:
-          namePack(name, buff, label_index);
-          state = next;
+          state = writeTruncate(buff, packet, section, last_resource);
           break;
         case WRITE_QUESTION:
-          val = packet.question[0];
-          assert(val, 'Packet requires a question');
-          assertUndefined(val.name, 'Question requires a "name"');
-          name = val.name;
-          state = WRITE_NAME_PACK;
-          next = WRITE_QUESTION_NEXT;
-          break;
-        case WRITE_QUESTION_NEXT:
-          assertUndefined(val.type, 'Question requires a "type"');
-          assertUndefined(val.class, 'Questionn requires a "class"');
-          buff.writeUInt16BE(val.type & 0xFFFF);
-          buff.writeUInt16BE(val.class & 0xFFFF);
-          state = WRITE_RESOURCE_RECORD;
+          state = writeQuestion(buff, packet.question[0], label_index);
           section = 'answer';
           count = 0;
           break;
@@ -287,134 +420,41 @@ Packet.write = function(buff, packet) {
           }
           break;
         case WRITE_RESOURCE_WRITE:
+          rdata = {}
           val = packet[section][count];
-          assertUndefined(val.name, 'Resource record requires "name"');
-          name = val.name;
-          state = WRITE_NAME_PACK;
-          next = WRITE_RESOURCE_WRITE_NEXT;
-          break;
-        case WRITE_RESOURCE_WRITE_NEXT:
-          assertUndefined(val.type, 'Resource record requires "type"');
-          assertUndefined(val.class, 'Resource record requires "class"');
-          assertUndefined(val.ttl, 'Resource record requires "ttl"');
-          buff.writeUInt16BE(val.type & 0xFFFF);
-          buff.writeUInt16BE(val.class & 0xFFFF);
-          buff.writeUInt32BE(val.ttl & 0xFFFFFFFF);
-
-          // where the rdata length goes
-          rdata_pos = buff.tell();
-          buff.writeUInt16BE(0);
-
-          state = val.type;
+          state = writeResource(buff, val, label_index, rdata);
           break;
         case WRITE_RESOURCE_DONE:
-          pos = buff.tell();
-          buff.seek(rdata_pos);
-          buff.writeUInt16BE(pos - rdata_pos - 2);
-          buff.seek(pos);
           count += 1;
-          state = WRITE_RESOURCE_RECORD;
+          state = writeResourceDone(buff, rdata);
           break;
         case WRITE_A:
         case WRITE_AAAA:
-          //TODO XXX FIXME -- assert that address is of proper type
-          assertUndefined(val.address, 'A/AAAA record requires "address"');
-          val = ipaddr.parse(val.address).toByteArray();
-          val.forEach(function(b) {
-            buff.writeUInt8(b);
-          });
-          state = WRITE_RESOURCE_DONE;
+          state = writeIp(buff, val);
           break;
         case WRITE_NS:
         case WRITE_CNAME:
         case WRITE_PTR:
-          assertUndefined(val.data, 'NS/CNAME/PTR record requires "data"');
-          name = val.data;
-          state = WRITE_NAME_PACK;
-          next = WRITE_RESOURCE_DONE;
+          state = writeCname(buff, val, label_index);
           break;
         case WRITE_SPF:
         case WRITE_TXT:
-          //TODO XXX FIXME -- split on max char string and loop
-          assertUndefined(val.data, 'TXT record requires "data"');
-          buff.writeUInt8(val.data.length);
-          buff.write(val.data, val.data.length, 'ascii');
-          state = WRITE_RESOURCE_DONE;
+          state = writeTxt(buff, val);
           break;
         case WRITE_MX:
-          assertUndefined(val.priority, 'MX record requires "priority"');
-          assertUndefined(val.exchange, 'MX record requires "exchange"');
-          buff.writeUInt16BE(val.priority & 0xFFFF);
-          name = val.exchange;
-          state = WRITE_NAME_PACK;
-          next = WRITE_RESOURCE_DONE;
+          state = writeMx(buff, val, label_index);
           break;
         case WRITE_SRV:
-          assertUndefined(val.priority, 'SRV record requires "priority"');
-          assertUndefined(val.weight, 'SRV record requires "weight"');
-          assertUndefined(val.port, 'SRV record requires "port"');
-          assertUndefined(val.target, 'SRV record requires "target"');
-          buff.writeUInt16BE(val.priority & 0xFFFF);
-          buff.writeUInt16BE(val.weight & 0xFFFF);
-          buff.writeUInt16BE(val.port & 0xFFFF);
-          name = val.target;
-          state = WRITE_NAME_PACK;
-          next = WRITE_RESOURCE_DONE;
+          state = writeSrv(buff, val, label_index);
           break;
         case WRITE_SOA:
-          assertUndefined(val.primary, 'SOA record requires "primary"');
-          name = val.primary;
-          state = WRITE_NAME_PACK;
-          next = WRITE_SOA_ADMIN;
-          break;
-        case WRITE_SOA_ADMIN:
-          assertUndefined(val.admin, 'SOA record requires "admin"');
-          name = val.admin;
-          state = WRITE_NAME_PACK;
-          next = WRITE_SOA_NEXT;
-          break;
-        case WRITE_SOA_NEXT:
-          assertUndefined(val.serial, 'SOA record requires "serial"');
-          assertUndefined(val.refresh, 'SOA record requires "refresh"');
-          assertUndefined(val.retry, 'SOA record requires "retry"');
-          assertUndefined(val.expiration, 'SOA record requires "expiration"');
-          assertUndefined(val.minimum, 'SOA record requires "minimum"');
-          buff.writeUInt32BE(val.serial & 0xFFFFFFFF);
-          buff.writeInt32BE(val.refresh & 0xFFFFFFFF);
-          buff.writeInt32BE(val.retry & 0xFFFFFFFF);
-          buff.writeInt32BE(val.expiration & 0xFFFFFFFF);
-          buff.writeInt32BE(val.minimum & 0xFFFFFFFF);
-          state = WRITE_RESOURCE_DONE;
+          state = writeSoa(buff, val, label_index);
           break;
         case WRITE_OPT:
-          while (packet.edns_options.length) {
-            val = packet.edns_options.pop();
-            buff.writeUInt16BE(val.code);
-            buff.writeUInt16BE(val.data.length);
-            for (pos = 0; pos < val.data.length; pos++) {
-              buff.writeUInt8(val.data.readUInt8(pos));
-            }
-          }
-          state = WRITE_RESOURCE_DONE;
+          state = writeOpt(buff, packet);
           break;
         case WRITE_NAPTR:
-          assertUndefined(val.order, 'NAPTR record requires "order"');
-          assertUndefined(val.preference, 'NAPTR record requires "preference"');
-          assertUndefined(val.flags, 'NAPTR record requires "flags"');
-          assertUndefined(val.service, 'NAPTR record requires "service"');
-          assertUndefined(val.regexp, 'NAPTR record requires "regexp"');
-          assertUndefined(val.replacement, 'NAPTR record requires "replacement"');
-          buff.writeUInt16BE(val.order & 0xFFFF);
-          buff.writeUInt16BE(val.preference & 0xFFFF);
-          buff.writeUInt8(val.flags.length);
-          buff.write(val.flags, val.flags.length, 'ascii');
-          buff.writeUInt8(val.service.length);
-          buff.write(val.service, val.service.length, 'ascii');
-          buff.writeUInt8(val.regexp.length);
-          buff.write(val.regexp, val.regexp.length, 'ascii');
-          buff.writeUInt8(val.replacement.length);
-          buff.write(val.replacement, val.replacement.length, 'ascii');
-          state = WRITE_RESOURCE_DONE;
+          state = writeNaptr(buff, val);
           break;
         case WRITE_END:
           return buff.tell();
