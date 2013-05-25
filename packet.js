@@ -59,7 +59,7 @@ var isPointer = function(len) {
   return (len & LABEL_POINTER) === LABEL_POINTER;
 };
 
-var nameUnpack = function(buff) {
+function nameUnpack(buff) {
   var len, comp, end, pos, part, combine = '';
 
   len = buff.readUInt8();
@@ -94,9 +94,9 @@ var nameUnpack = function(buff) {
   buff.seek(end);
 
   return combine;
-};
+}
 
-var name_pack = function(str, buff, index) {
+function namePack(str, buff, index) {
   var offset, dot, part;
 
   while (str) {
@@ -122,7 +122,7 @@ var name_pack = function(str, buff, index) {
   if (!str) {
     buff.writeUInt8(0);
   }
-};
+}
 
 var
   WRITE_HEADER              = 100001,
@@ -245,7 +245,7 @@ Packet.write = function(buff, packet) {
           state = WRITE_END;
           break;
         case WRITE_NAME_PACK:
-          name_pack(name, buff, label_index);
+          namePack(name, buff, label_index);
           state = next;
           break;
         case WRITE_QUESTION:
