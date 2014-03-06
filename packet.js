@@ -64,6 +64,7 @@ function nameUnpack(buff) {
 
   len = buff.readUInt8();
   comp = false;
+  end = buff.tell()
 
   while (len !== 0) {
     if (isPointer(len)) {
@@ -158,8 +159,8 @@ function writeHeader(buff, packet) {
   val += (packet.header.rd << 8) & 0x100;
   val += (packet.header.ra << 7) & 0x80;
   val += (packet.header.res1 << 6) & 0x40;
-  val += (packet.header.res1 << 5) & 0x20;
-  val += (packet.header.res1 << 4) & 0x10;
+  val += (packet.header.res2 << 5) & 0x20;
+  val += (packet.header.res3 << 4) & 0x10;
   val += packet.header.rcode & 0xF;
   buff.writeUInt16BE(val & 0xFFFF);
   assert(packet.question.length == 1, 'DNS requires one question');
@@ -334,7 +335,7 @@ function writeNaptr(buff, val) {
   return WRITE_RESOURCE_DONE;
 }
 
-function writeEnds(packet) {
+function writeEdns(packet) {
   var val = {
     name: '',
     type: consts.NAME_TO_QTYPE.OPT,
@@ -345,6 +346,9 @@ function writeEnds(packet) {
   packet.header.rcode = pos - (val.ttl << 4);
   val.ttl = (val.ttl << 8) + packet.edns_version;
   val.ttl = (val.ttl << 16) + (packet.do << 15) & 0x8000;
+
+  // Add it temporarily so it can be written afterwards.
+  // Don't forget to remove it afterwards !
   packet.additional.splice(0, 0, val);
   return WRITE_HEADER;
 }
@@ -385,7 +389,7 @@ Packet.write = function(buff, packet) {
     try {
       switch (state) {
         case WRITE_EDNS:
-          state = writeEns(packet);
+          state = writeEdns(packet);
           break;
         case WRITE_HEADER:
           state = writeHeader(buff, packet);
@@ -457,6 +461,10 @@ Packet.write = function(buff, packet) {
           state = writeNaptr(buff, val);
           break;
         case WRITE_END:
+          // Remove temporary additional OPT
+          packet.additional = packet.additional.filter(function(val) {
+            return val.type != consts.NAME_TO_QTYPE.OPT;
+          })
           return buff.tell();
           break;
         default:
@@ -473,7 +481,7 @@ Packet.write = function(buff, packet) {
   }
 };
 
-function parseHeader(msg, packet, counts) {
+function parseHeader(msg, packet) {
   packet.header.id = msg.readUInt16BE();
   var val = msg.readUInt16BE();
   packet.header.qr = (val & 0x8000) >> 15;
@@ -615,7 +623,6 @@ Packet.parse = function(msg) {
       pos,
       val,
       rdata,
-      counts = {},
       section,
       count;
 
@@ -629,7 +636,7 @@ Packet.parse = function(msg) {
   while (true) {
     switch (state) {
       case PARSE_HEADER:
-        state = parseHeader(msg, packet, counts);
+        state = parseHeader(msg, packet);
         break;
       case PARSE_QUESTION:
         state = parseQuestion(msg, packet);
@@ -692,7 +699,7 @@ Packet.parse = function(msg) {
       case PARSE_OPT:
         // assert first entry in additional
         rdata.buf = msg.slice(rdata.len);
-        counts[count] -= 1;
+        count += 1
         packet.payload = val.class;
         pos = msg.tell();
         msg.seek(pos - 6);
