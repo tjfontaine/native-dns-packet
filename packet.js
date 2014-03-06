@@ -146,7 +146,8 @@ var
   WRITE_TXT   = consts.NAME_TO_QTYPE.TXT,
   WRITE_SOA   = consts.NAME_TO_QTYPE.SOA,
   WRITE_OPT   = consts.NAME_TO_QTYPE.OPT,
-  WRITE_NAPTR = consts.NAME_TO_QTYPE.NAPTR;
+  WRITE_NAPTR = consts.NAME_TO_QTYPE.NAPTR,
+  WRITE_TLSA  = consts.NAME_TO_QTYPE.TLSA;
 
 function writeHeader(buff, packet) {
   assert(packet.header, 'Packet requires "header"');
@@ -335,6 +336,18 @@ function writeNaptr(buff, val) {
   return WRITE_RESOURCE_DONE;
 }
 
+function writeTlsa(buff, val) {
+  assertUndefined(val.usage, 'TLSA record requires "usage"');
+  assertUndefined(val.selector, 'TLSA record requires "selector"');
+  assertUndefined(val.matchingtype, 'TLSA record requires "matchingtype"');
+  assertUndefined(val.data, 'TLSA record requires "data"');
+  buff.writeUInt8(val.usage);
+  buff.writeUInt8(val.selector);
+  buff.writeUInt8(val.matchingtype);
+  buff.write(val.data, val.data.length, 'hex');
+  return WRITE_RESOURCE_DONE;
+}
+
 function writeEdns(packet) {
   var val = {
     name: '',
@@ -459,6 +472,9 @@ Packet.write = function(buff, packet) {
           break;
         case WRITE_NAPTR:
           state = writeNaptr(buff, val);
+          break;
+        case WRITE_TLSA:
+          state = writeTlsa(buff, val);
           break;
         case WRITE_END:
           // Remove temporary additional OPT
@@ -597,6 +613,14 @@ function parseNaptr(val, rdata) {
   return PARSE_RESOURCE_DONE;
 }
 
+function parseTlsa(val, msg, rdata) {
+  val.usage = msg.readUInt8();
+  val.selector = msg.readUInt8();
+  val.matchingtype = msg.readUInt8();
+  val.data = msg.toString('hex', rdata.len - 3);
+  return PARSE_RESOURCE_DONE;
+}
+
 var
   PARSE_HEADER          = 100000,
   PARSE_QUESTION        = 100001,
@@ -615,7 +639,8 @@ var
   PARSE_SRV   = consts.NAME_TO_QTYPE.SRV,
   PARSE_NAPTR = consts.NAME_TO_QTYPE.NAPTR,
   PARSE_OPT   = consts.NAME_TO_QTYPE.OPT,
-  PARSE_SPF   = consts.NAME_TO_QTYPE.SPF;
+  PARSE_SPF   = consts.NAME_TO_QTYPE.SPF,
+  PARSE_TLSA  = consts.NAME_TO_QTYPE.TLSA;
   
 
 Packet.parse = function(msg) {
@@ -718,6 +743,9 @@ Packet.parse = function(msg) {
         break;
       case PARSE_NAPTR:
         state = parseNaptr(val, msg);
+        break;
+      case PARSE_TLSA:
+        state = parseTlsa(val, msg, rdata);
         break;
       case PARSE_END:
         return packet;
