@@ -45,10 +45,10 @@ var Packet = module.exports = function() {
     res3: 0,
     rcode: 0
   };
-  this.question = undefined;
-  this.answer = undefined;
-  this.authority = undefined;
-  this.additional = undefined;
+  this.question = [];
+  this.answer = [];
+  this.authority = [];
+  this.additional = [];
   this.edns_options = [];
   this.payload = undefined;
 };
