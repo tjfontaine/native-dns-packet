@@ -566,10 +566,11 @@ function parseCname(val, msg) {
 }
 
 function parseTxt(val, msg, rdata) {
-  val.data = '';
+  val.data = [];
   var end = msg.tell() + rdata.len;
   while (msg.tell() != end) {
-    val.data += msg.toString('ascii', msg.readUInt8());
+    var len = msg.readUInt8();
+    val.data.push(msg.toString('ascii', len));
   }
   return PARSE_RESOURCE_DONE;
 }
