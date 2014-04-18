@@ -79,7 +79,7 @@ function nameUnpack(buff) {
       continue;
     }
 
-    part = buff.toString('ascii', len);
+    part = buff.toString('ascii', len); // TODO: utf8?
 
     if (combine.length)
       combine = combine + '.' + part;
@@ -116,7 +116,7 @@ function namePack(str, buff, index) {
         str = undefined;
       }
       buff.writeUInt8(part.length);
-      buff.write(part, part.length, 'ascii');
+      buff.write(part, part.length, 'ascii'); // TODO: change to utf8?
     }
   }
 
@@ -270,11 +270,24 @@ function writeCname(buff, val, label_index) {
   return WRITE_RESOURCE_DONE;
 }
 
+/*
+<character-string> is a single
+length octet followed by that number of characters.  <character-string>
+is treated as binary information, and can be up to 256 characters in
+length (including the length octet).
+3.3.14. TXT RDATA format
+TXT-DATA        One or more <character-string>s.
+TXT RRs are used to hold descriptive text.  The semantics of the text
+depends on the domain where it is found.
+*/
 function writeTxt(buff, val) {
   //TODO XXX FIXME -- split on max char string and loop
   assertUndefined(val.data, 'TXT record requires "data"');
-  buff.writeUInt8(val.data.length);
-  buff.write(val.data, val.data.length, 'ascii');
+  for (var i=0,len=val.data.length; i<len; i++) {
+    var dataLen = Buffer.byteLength(val.data[i], 'utf8');
+    buff.writeUInt8(dataLen);
+    buff.write(val.data[i], dataLen, 'utf8');
+  }
   return WRITE_RESOURCE_DONE;
 }
 
@@ -286,6 +299,8 @@ function writeMx(buff, val, label_index) {
   return WRITE_RESOURCE_DONE;
 }
 
+// SRV: https://tools.ietf.org/html/rfc2782
+// TODO: SRV fixture failing for '_xmpp-server._tcp.gmail.com.srv.js'
 function writeSrv(buff, val, label_index) {
   assertUndefined(val.priority, 'SRV record requires "priority"');
   assertUndefined(val.weight, 'SRV record requires "weight"');
@@ -340,11 +355,19 @@ function writeTlsa(buff, val) {
   assertUndefined(val.usage, 'TLSA record requires "usage"');
   assertUndefined(val.selector, 'TLSA record requires "selector"');
   assertUndefined(val.matchingtype, 'TLSA record requires "matchingtype"');
-  assertUndefined(val.data, 'TLSA record requires "data"');
+  assertUndefined(val.buff, 'TLSA record requires "buff"');
   buff.writeUInt8(val.usage);
   buff.writeUInt8(val.selector);
   buff.writeUInt8(val.matchingtype);
-  buff.write(val.data, val.data.length, 'hex');
+  var tell = buff.tell();
+  if (tell + val.buff.length > buff.length) {
+    // TODO: see https://github.com/tjfontaine/node-buffercursor/issues/9
+    var str = 'ERROR: buffer lacks room for TLSA record of size: ' + val.buff.length + ' bytes';
+    console.log(str);
+    throw new BufferCursorOverflow(str);
+  }
+  val.buff.copy(buff.buffer, tell);
+  buff.seek(tell + val.buff.length);
   return WRITE_RESOURCE_DONE;
 }
 
@@ -362,6 +385,7 @@ function writeEdns(packet) {
 
   // Add it temporarily so it can be written afterwards.
   // Don't forget to remove it afterwards !
+  // TODO: @rakoo, wtf is this? Explanation please!
   packet.additional.splice(0, 0, val);
   return WRITE_HEADER;
 }
@@ -478,13 +502,14 @@ Packet.write = function(buff, packet) {
           break;
         case WRITE_END:
           // Remove temporary additional OPT
+          // TODO: @rakoo, wtf is this? Explanation please! Why? What's going on?
           packet.additional = packet.additional.filter(function(val) {
             return val.type != consts.NAME_TO_QTYPE.OPT;
           })
           return buff.tell();
           break;
         default:
-          throw new Error('WTF No State While Writing');
+          throw new Error('Packet.write Unknown State: ' + state);
           break;
       }
     } catch (e) {
@@ -570,7 +595,7 @@ function parseTxt(val, msg, rdata) {
   var end = msg.tell() + rdata.len;
   while (msg.tell() != end) {
     var len = msg.readUInt8();
-    val.data.push(msg.toString('ascii', len));
+    val.data.push(msg.toString('utf8', len));
   }
   return PARSE_RESOURCE_DONE;
 }
@@ -581,6 +606,8 @@ function parseMx(val, msg, rdata) {
   return PARSE_RESOURCE_DONE;
 }
 
+// TODO: SRV fixture failing for '_xmpp-server._tcp.gmail.com.srv.js'
+//       https://tools.ietf.org/html/rfc2782
 function parseSrv(val, msg) {
   val.priority = msg.readUInt16BE();
   val.weight = msg.readUInt16BE();
@@ -618,7 +645,15 @@ function parseTlsa(val, msg, rdata) {
   val.usage = msg.readUInt8();
   val.selector = msg.readUInt8();
   val.matchingtype = msg.readUInt8();
-  val.data = msg.toString('hex', rdata.len - 3);
+  val.buff = msg.slice(rdata.len - 3).buffer; // 3 because of the 3 UInt8s above.
+                                              // val.buff is a regular Buffer so
+                                              // that users don't need to include
+                                              // the BufferCursor module.
+/*
+  // val.buff is a regular Buffer. users don't need BufferCursor module.
+  val.buff = new Buffer(rdata.len - 3); // 3 because of the 3 UInt8s above.
+  msg.slice(val.buff.length).buffer.copy(val.buff);
+*/
   return PARSE_RESOURCE_DONE;
 }
 

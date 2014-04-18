@@ -19,9 +19,9 @@ files.forEach(function (file) {
     var binFile = path.join(fixtureDir, file.replace(/\.js$/, '.bin'));
     var bin = fs.readFileSync(binFile);
     var rtrip = Packet.parse(buff.slice(0, written));
-    t.equivalent(written, bin.length);
-    t.equivalent(buff.slice(0, written), bin);
-    t.equivalent(rtrip, js);
+    t.equivalent(written, bin.length, null, {testMsgLen: file});
+    t.equivalent(buff.slice(0, written), bin, null, {testBin: file});
+    t.equivalent(rtrip, js, null, {testObj: file});
     t.end();
   });
 });
