@@ -397,9 +397,7 @@ function writeOpt(buff, packet) {
     val = packet.edns_options.pop();
     buff.writeUInt16BE(val.code);
     buff.writeUInt16BE(val.data.length);
-    for (pos = 0; pos < val.data.length; pos++) {
-      buff.writeUInt8(val.data.readUInt8(pos));
-    }
+    buff.copy(val.data);
   }
 
   return WRITE_RESOURCE_DONE;
