@@ -702,7 +702,7 @@ Packet.parse = function(msg) {
         count = 0;
         break;
       case PARSE_RESOURCE_RECORD:
-        console.log('PARSE_RESOURCE_RECORD: count = %d, %s.len = %d', count, section, packet[section].length);
+        // console.log('PARSE_RESOURCE_RECORD: count = %d, %s.len = %d', count, section, packet[section].length);
         if (count === packet[section].length) {
           switch (section) {
             case 'answer':
