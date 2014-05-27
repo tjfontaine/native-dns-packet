@@ -484,7 +484,11 @@ Packet.write = function(buff, packet) {
         case WRITE_END:
           return buff.tell();
         default:
-          throw new Error('Packet.write Unknown State: ' + state);
+          if (typeof val.data !== 'object')
+            throw new Error('Packet.write Unknown State: ' + state);
+          // write unhandled RR type
+          buff.copy(val.data);
+          state = WRITE_RESOURCE_DONE;
       }
     } catch (e) {
       if (e instanceof BufferCursorOverflow) {
