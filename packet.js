@@ -574,7 +574,7 @@ function parseSoa(val, msg) {
   return PARSE_RESOURCE_DONE;
 }
 
-function parseNaptr(val, rdata) {
+function parseNaptr(val, msg) {
   val.order = msg.readUInt16BE();
   val.preference = msg.readUInt16BE();
   var pos = msg.readUInt8();
