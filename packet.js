@@ -65,6 +65,9 @@ function nameUnpack(buff) {
   len = buff.readUInt8();
   comp = false;
 
+  // A null byte at the start of a name indicates the root domain name
+  if (len === 0) end = buff.tell();
+
   while (len !== 0) {
     if (isPointer(len)) {
       len -= LABEL_POINTER;
@@ -607,7 +610,7 @@ var
   PARSE_NAPTR = consts.NAME_TO_QTYPE.NAPTR,
   PARSE_OPT   = consts.NAME_TO_QTYPE.OPT,
   PARSE_SPF   = consts.NAME_TO_QTYPE.SPF;
-  
+
 
 Packet.parse = function(msg) {
   var state,
