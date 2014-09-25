@@ -521,6 +521,11 @@ function parseHeader(msg, packet) {
 }
 
 function parseQuestion(msg, packet) {
+  if (packet.header.opcode === 0 && // Standard query
+    packet.header.qr === 1 && // Response
+    packet.question.length === 0) { // Empty question can occur in mDNS
+    return PARSE_RESOURCE_RECORD;
+  }
   var val = {};
   val.name = nameUnpack(msg);
   val.type = msg.readUInt16BE();
