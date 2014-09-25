@@ -497,13 +497,15 @@ function parseQuestion(msg, packet) {
     packet.question.length === 0) { // Empty question can occur in mDNS
     return PARSE_RESOURCE_RECORD;
   }
-  var val = {};
-  val.name = nameUnpack(msg);
-  val.type = msg.readUInt16BE();
-  val.class = msg.readUInt16BE();
-  packet.question[0] = val;
-  assert(packet.question.length === 1);
-  // TODO handle qdcount > 0 in practice no one sends this
+  var qnum = packet.question.length;
+  while (qnum > 0) {
+    var val = {};
+    val.name = nameUnpack(msg);
+    val.type = msg.readUInt16BE();
+    val.class = msg.readUInt16BE();
+    packet.question[packet.question.length - qnum] = val;
+    qnum -= 1;
+  }
   return PARSE_RESOURCE_RECORD;
 }
 
