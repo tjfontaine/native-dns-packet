@@ -31,6 +31,10 @@ var Packet = function () {
 
 ## History
 
+###### 0.1.1 - October 5, 2014
+
+- Fixing NPM tagging issue...
+
 ###### 0.1.0 - October 2, 2014
 
 - Added TLSA support
