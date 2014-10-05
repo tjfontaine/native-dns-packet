@@ -85,6 +85,7 @@ var NAME_TO_QTYPE = exports.NAME_TO_QTYPE = {
   DHCID: 49,
   NSEC3: 50,
   NSEC3PARAM: 51,
+  TLSA: 52,
   HIP: 55,
   NINFO: 56,
   RKEY: 57,

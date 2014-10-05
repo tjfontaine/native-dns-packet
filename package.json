@@ -1,7 +1,11 @@
 {
   "name": "native-dns-packet",
-  "version": "0.0.4",
-  "author": "Timothy J Fontaine <tjfontaine@gmail.com> (http://atxconsulting.com)",
+  "version": "0.1.0",
+  "authors": [
+    "Timothy J Fontaine <tjfontaine@gmail.com> (http://atxconsulting.com)",
+    "Greg Slepak <contact@taoeffect.com> (https://twitter.com/taoeffect)",
+    "Matthieu Rakotojaona"
+  ],
   "description": "Raw DNS Packet Parsing and Writing",
   "keywords": [
     "dns",

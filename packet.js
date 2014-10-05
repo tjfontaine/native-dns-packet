@@ -18,6 +18,11 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE
 
+// TODO: change the default UDP packet size that node-dns sends
+//       from 4096 to conform to these:
+//       - [requestor's payload size](https://tools.ietf.org/html/rfc6891#section-6.2.3)
+//       - [responders's payload size](https://tools.ietf.org/html/rfc6891#section-6.2.4)
+
 'use strict';
 
 var consts = require('./consts'),
@@ -49,8 +54,8 @@ var Packet = module.exports = function() {
   this.answer = [];
   this.authority = [];
   this.additional = [];
-  this.edns_options = [];
-  this.payload = undefined;
+  this.edns_options = [];   // TODO: DEPRECATED! Use `.edns.options` instead!
+  this.payload = undefined; // TODO: DEPRECATED! Use `.edns.payload` instead!
 };
 
 var LABEL_POINTER = 0xC0;
@@ -64,6 +69,7 @@ function nameUnpack(buff) {
 
   len = buff.readUInt8();
   comp = false;
+  end = buff.tell();
 
   while (len !== 0) {
     if (isPointer(len)) {
@@ -145,7 +151,8 @@ var
   WRITE_TXT   = consts.NAME_TO_QTYPE.TXT,
   WRITE_SOA   = consts.NAME_TO_QTYPE.SOA,
   WRITE_OPT   = consts.NAME_TO_QTYPE.OPT,
-  WRITE_NAPTR = consts.NAME_TO_QTYPE.NAPTR;
+  WRITE_NAPTR = consts.NAME_TO_QTYPE.NAPTR,
+  WRITE_TLSA  = consts.NAME_TO_QTYPE.TLSA;
 
 function writeHeader(buff, packet) {
   assert(packet.header, 'Packet requires "header"');
@@ -158,8 +165,8 @@ function writeHeader(buff, packet) {
   val += (packet.header.rd << 8) & 0x100;
   val += (packet.header.ra << 7) & 0x80;
   val += (packet.header.res1 << 6) & 0x40;
-  val += (packet.header.res1 << 5) & 0x20;
-  val += (packet.header.res1 << 4) & 0x10;
+  val += (packet.header.res2 << 5) & 0x20;
+  val += (packet.header.res3 << 4) & 0x10;
   val += packet.header.rcode & 0xF;
   buff.writeUInt16BE(val & 0xFFFF);
   assert(packet.question.length == 1, 'DNS requires one question');
@@ -187,7 +194,7 @@ function writeTruncate(buff, packet, section, val) {
   //
   // TODO IOW only set TC if we hit it in ANSWERS otherwise make sure an
   // entire RRSet is removed during a truncation.
-  var pos, val;
+  var pos;
 
   buff.seek(2);
   val = buff.readUInt16BE();
@@ -213,8 +220,8 @@ function writeTruncate(buff, packet, section, val) {
       break;
   }
   buff.seek(pos);
-  buff.writeUInt16BE(count - 1);
-  buff.seek(last_resource);
+  buff.writeUInt16BE(count - 1); // TODO: count not defined!
+  buff.seek(last_resource);      // TODO: last_resource not defined!
   return WRITE_END;
 }
 
@@ -240,7 +247,8 @@ function writeResource(buff, val, label_index, rdata) {
   buff.writeUInt16BE(val.class & 0xFFFF);
   buff.writeUInt32BE(val.ttl & 0xFFFFFFFF);
   rdata.pos = buff.tell();
-  buff.writeUInt16BE(0);
+  buff.writeUInt16BE(0); // if there is rdata, then this value will be updated
+                         // to the correct value by 'writeResourceDone'
   return val.type;
 }
 
@@ -268,11 +276,16 @@ function writeCname(buff, val, label_index) {
   return WRITE_RESOURCE_DONE;
 }
 
+// For <character-string> see: http://tools.ietf.org/html/rfc1035#section-3.3
+// For TXT: http://tools.ietf.org/html/rfc1035#section-3.3.14
 function writeTxt(buff, val) {
   //TODO XXX FIXME -- split on max char string and loop
   assertUndefined(val.data, 'TXT record requires "data"');
-  buff.writeUInt8(val.data.length);
-  buff.write(val.data, val.data.length, 'ascii');
+  for (var i=0,len=val.data.length; i<len; i++) {
+    var dataLen = Buffer.byteLength(val.data[i], 'utf8');
+    buff.writeUInt8(dataLen);
+    buff.write(val.data[i], dataLen, 'utf8');
+  }
   return WRITE_RESOURCE_DONE;
 }
 
@@ -284,6 +297,8 @@ function writeMx(buff, val, label_index) {
   return WRITE_RESOURCE_DONE;
 }
 
+// SRV: https://tools.ietf.org/html/rfc2782
+// TODO: SRV fixture failing for '_xmpp-server._tcp.gmail.com.srv.js'
 function writeSrv(buff, val, label_index) {
   assertUndefined(val.priority, 'SRV record requires "priority"');
   assertUndefined(val.weight, 'SRV record requires "weight"');
@@ -314,7 +329,8 @@ function writeSoa(buff, val, label_index) {
   return WRITE_RESOURCE_DONE;
 }
 
-function writeNaptr(buff, val) {
+// http://tools.ietf.org/html/rfc3403#section-4.1
+function writeNaptr(buff, val, label_index) {
   assertUndefined(val.order, 'NAPTR record requires "order"');
   assertUndefined(val.preference, 'NAPTR record requires "preference"');
   assertUndefined(val.flags, 'NAPTR record requires "flags"');
@@ -329,41 +345,49 @@ function writeNaptr(buff, val) {
   buff.write(val.service, val.service.length, 'ascii');
   buff.writeUInt8(val.regexp.length);
   buff.write(val.regexp, val.regexp.length, 'ascii');
-  buff.writeUInt8(val.replacement.length);
-  buff.write(val.replacement, val.replacement.length, 'ascii');
+  namePack(val.replacement, buff, label_index);
   return WRITE_RESOURCE_DONE;
 }
 
-function writeEnds(packet) {
-  var val = {
+// https://tools.ietf.org/html/rfc6698
+function writeTlsa(buff, val) {
+  assertUndefined(val.usage, 'TLSA record requires "usage"');
+  assertUndefined(val.selector, 'TLSA record requires "selector"');
+  assertUndefined(val.matchingtype, 'TLSA record requires "matchingtype"');
+  assertUndefined(val.buff, 'TLSA record requires "buff"');
+  buff.writeUInt8(val.usage);
+  buff.writeUInt8(val.selector);
+  buff.writeUInt8(val.matchingtype);
+  buff.copy(val.buff);
+  return WRITE_RESOURCE_DONE;
+}
+
+function makeEdns(packet) {
+  packet.edns = {
     name: '',
     type: consts.NAME_TO_QTYPE.OPT,
-    class: packet.payload
+    class: packet.payload,
+    options: [],
+    ttl: 0
   };
-  var pos = packet.header.rcode;
-  val.ttl = packet.header.rcode >> 4;
-  packet.header.rcode = pos - (val.ttl << 4);
-  val.ttl = (val.ttl << 8) + packet.edns_version;
-  val.ttl = (val.ttl << 16) + (packet.do << 15) & 0x8000;
-  packet.additional.splice(0, 0, val);
+  packet.edns_options = packet.edns.options; // TODO: 'edns_options' is DEPRECATED!
+  packet.additional.push(packet.edns);
   return WRITE_HEADER;
 }
 
-function writeOpt(buff, packet) {
-  var pos;
-
-  while (packet.edns_options.length) {
-    val = packet.edns_options.pop();
-    buff.writeUInt16BE(val.code);
-    buff.writeUInt16BE(val.data.length);
-    buff.copy(val.data);
+function writeOpt(buff, val) {
+  var opt;
+  for (var i=0, len=val.options.length; i<len; i++) {
+    opt = val.options[i];
+    buff.writeUInt16BE(opt.code);
+    buff.writeUInt16BE(opt.data.length);
+    buff.copy(opt.data);
   }
-
   return WRITE_RESOURCE_DONE;
 }
 
 Packet.write = function(buff, packet) {
-  var state,
+  var state = WRITE_HEADER,
       val,
       section,
       count,
@@ -371,20 +395,20 @@ Packet.write = function(buff, packet) {
       last_resource,
       label_index = {};
 
-  buff = BufferCursor(buff);
+  buff = new BufferCursor(buff);
 
-  if (typeof(packet.edns_version) !== 'undefined') {
-    state = WRITE_EDNS;
-  } else {
-    state = WRITE_HEADER;
-  }
+  // the existence of 'edns' in a packet indicates that a proper OPT record exists
+  // in 'additional' and that all of the other fields in packet (that are parsed by
+  // 'parseOpt') are properly set. If it does not exist, we assume that the user
+  // is requesting that we create one for them.
+  if (typeof packet.edns_version !== 'undefined' && typeof packet.edns === "undefined")
+    state = makeEdns(packet);
 
+  // TODO: this is unnecessarily inefficient. rewrite this using a
+  //       function table instead. (same for Packet.parse too).
   while (true) {
     try {
       switch (state) {
-        case WRITE_EDNS:
-          state = writeEns(packet);
-          break;
         case WRITE_HEADER:
           state = writeHeader(buff, packet);
           break;
@@ -418,7 +442,7 @@ Packet.write = function(buff, packet) {
           }
           break;
         case WRITE_RESOURCE_WRITE:
-          rdata = {}
+          rdata = {};
           val = packet[section][count];
           state = writeResource(buff, val, label_index, rdata);
           break;
@@ -449,17 +473,22 @@ Packet.write = function(buff, packet) {
           state = writeSoa(buff, val, label_index);
           break;
         case WRITE_OPT:
-          state = writeOpt(buff, packet);
+          state = writeOpt(buff, val);
           break;
         case WRITE_NAPTR:
-          state = writeNaptr(buff, val);
+          state = writeNaptr(buff, val, label_index);
+          break;
+        case WRITE_TLSA:
+          state = writeTlsa(buff, val);
           break;
         case WRITE_END:
           return buff.tell();
-          break;
         default:
-          throw new Error('WTF No State While Writing');
-          break;
+          if (typeof val.data !== 'object')
+            throw new Error('Packet.write Unknown State: ' + state);
+          // write unhandled RR type
+          buff.copy(val.data);
+          state = WRITE_RESOURCE_DONE;
       }
     } catch (e) {
       if (e instanceof BufferCursorOverflow) {
@@ -471,7 +500,7 @@ Packet.write = function(buff, packet) {
   }
 };
 
-function parseHeader(msg, packet, counts) {
+function parseHeader(msg, packet) {
   packet.header.id = msg.readUInt16BE();
   var val = msg.readUInt16BE();
   packet.header.qr = (val & 0x8000) >> 15;
@@ -498,7 +527,7 @@ function parseQuestion(msg, packet) {
   val.class = msg.readUInt16BE();
   packet.question[0] = val;
   assert(packet.question.length === 1);
-  // TODO handle qdcount > 0 in practice no one sends this
+  // TODO handle qdcount > 1 in practice no one sends this
   return PARSE_RESOURCE_RECORD;
 }
 
@@ -509,7 +538,7 @@ function parseRR(msg, val, rdata) {
   val.ttl = msg.readUInt32BE();
   rdata.len = msg.readUInt16BE();
   return val.type;
-};
+}
 
 function parseA(val, msg) {
   var address = '' +
@@ -544,7 +573,7 @@ function parseTxt(val, msg, rdata) {
   var end = msg.tell() + rdata.len;
   while (msg.tell() != end) {
     var len = msg.readUInt8();
-    val.data.push(msg.toString('ascii', len));
+    val.data.push(msg.toString('utf8', len));
   }
   return PARSE_RESOURCE_DONE;
 }
@@ -555,6 +584,8 @@ function parseMx(val, msg, rdata) {
   return PARSE_RESOURCE_DONE;
 }
 
+// TODO: SRV fixture failing for '_xmpp-server._tcp.gmail.com.srv.js'
+//       https://tools.ietf.org/html/rfc2782
 function parseSrv(val, msg) {
   val.priority = msg.readUInt16BE();
   val.weight = msg.readUInt16BE();
@@ -574,17 +605,56 @@ function parseSoa(val, msg) {
   return PARSE_RESOURCE_DONE;
 }
 
-function parseNaptr(val, rdata) {
+// http://tools.ietf.org/html/rfc3403#section-4.1
+function parseNaptr(val, msg) {
   val.order = msg.readUInt16BE();
   val.preference = msg.readUInt16BE();
-  var pos = msg.readUInt8();
-  val.flags = msg.toString('ascii', pos);
-  pos = msg.readUInt8();
-  val.service = msg.toString('ascii', pos);
-  pos = msg.readUInt8();
-  val.regexp = msg.toString('ascii', pos);
-  pos = msg.readUInt8();
-  val.replacement = msg.toString('ascii', pos);
+  var len = msg.readUInt8();
+  val.flags = msg.toString('ascii', len);
+  len = msg.readUInt8();
+  val.service = msg.toString('ascii', len);
+  len = msg.readUInt8();
+  val.regexp = msg.toString('ascii', len);
+  val.replacement = nameUnpack(msg);
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseTlsa(val, msg, rdata) {
+  val.usage = msg.readUInt8();
+  val.selector = msg.readUInt8();
+  val.matchingtype = msg.readUInt8();
+  val.buff = msg.slice(rdata.len - 3).buffer; // 3 because of the 3 UInt8s above.
+  return PARSE_RESOURCE_DONE;
+}
+
+// https://tools.ietf.org/html/rfc6891#section-6.1.2
+// https://tools.ietf.org/html/rfc2671#section-4.4
+//       - [payload size selection](https://tools.ietf.org/html/rfc6891#section-6.2.5)
+function parseOpt(val, msg, rdata, packet) {
+  // assert first entry in additional
+  rdata.buf = msg.slice(rdata.len);
+
+  val.rcode = ((val.ttl & 0xFF000000) >> 20) + packet.header.rcode;
+  val.version = (val.ttl >> 16) & 0xFF;
+  val.do = (val.ttl >> 15) & 1;
+  val.z = val.ttl & 0x7F;
+  val.options = [];
+
+  packet.edns = val;
+  packet.edns_version = val.version; // TODO: return BADVERS for unsupported version! (Section 6.1.3)
+
+  // !! BEGIN DEPRECATION NOTICE !!
+  // THESE FIELDS MAY BE REMOVED IN THE FUTURE!
+  packet.edns_options = val.options;
+  packet.payload = val.class;
+  // !! END DEPRECATION NOTICE !!
+
+  while (!rdata.buf.eof()) {
+    val.options.push({
+      code: rdata.buf.readUInt16BE(),
+      data: rdata.buf.slice(rdata.buf.readUInt16BE()).buffer
+    });
+  }
   return PARSE_RESOURCE_DONE;
 }
 
@@ -606,7 +676,8 @@ var
   PARSE_SRV   = consts.NAME_TO_QTYPE.SRV,
   PARSE_NAPTR = consts.NAME_TO_QTYPE.NAPTR,
   PARSE_OPT   = consts.NAME_TO_QTYPE.OPT,
-  PARSE_SPF   = consts.NAME_TO_QTYPE.SPF;
+  PARSE_SPF   = consts.NAME_TO_QTYPE.SPF,
+  PARSE_TLSA  = consts.NAME_TO_QTYPE.TLSA;
   
 
 Packet.parse = function(msg) {
@@ -614,7 +685,6 @@ Packet.parse = function(msg) {
       pos,
       val,
       rdata,
-      counts = {},
       section,
       count;
 
@@ -623,12 +693,12 @@ Packet.parse = function(msg) {
   pos = 0;
   state = PARSE_HEADER;
 
-  msg = BufferCursor(msg);
+  msg = new BufferCursor(msg);
 
   while (true) {
     switch (state) {
       case PARSE_HEADER:
-        state = parseHeader(msg, packet, counts);
+        state = parseHeader(msg, packet);
         break;
       case PARSE_QUESTION:
         state = parseQuestion(msg, packet);
@@ -636,6 +706,7 @@ Packet.parse = function(msg) {
         count = 0;
         break;
       case PARSE_RESOURCE_RECORD:
+        // console.log('PARSE_RESOURCE_RECORD: count = %d, %s.len = %d', count, section, packet[section].length);
         if (count === packet[section].length) {
           switch (section) {
             case 'answer':
@@ -660,8 +731,7 @@ Packet.parse = function(msg) {
         state = parseRR(msg, val, rdata);
         break;
       case PARSE_RESOURCE_DONE:
-        packet[section][count] = val;
-        count++;
+        packet[section][count++] = val;
         state = PARSE_RESOURCE_RECORD;
         break;
       case PARSE_A:
@@ -689,31 +759,16 @@ Packet.parse = function(msg) {
         state = parseSoa(val, msg);
         break;
       case PARSE_OPT:
-        // assert first entry in additional
-        rdata.buf = msg.slice(rdata.len);
-        counts[count] -= 1;
-        packet.payload = val.class;
-        pos = msg.tell();
-        msg.seek(pos - 6);
-        packet.header.rcode = (msg.readUInt8() << 4) + packet.header.rcode;
-        packet.edns_version = msg.readUInt8();
-        val = msg.readUInt16BE();
-        msg.seek(pos);
-        packet.do = (val & 0x8000) << 15;
-        while (!rdata.buf.eof()) {
-          packet.edns_options.push({
-            code: rdata.buf.readUInt16BE(),
-            data: rdata.buf.slice(rdata.buf.readUInt16BE()).buffer
-          });
-        }
-        state = PARSE_RESOURCE_RECORD;
+        state = parseOpt(val, msg, rdata, packet);
         break;
       case PARSE_NAPTR:
         state = parseNaptr(val, msg);
         break;
+      case PARSE_TLSA:
+        state = parseTlsa(val, msg, rdata);
+        break;
       case PARSE_END:
         return packet;
-        break;
       default:
         //console.log(state, val);
         val.data = msg.slice(rdata.len);

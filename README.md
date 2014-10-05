@@ -1,26 +1,6 @@
 native-dns-packet
 -----------------
 
-Copyright 2011 Timothy J Fontaine <tjfontaine@gmail.com>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the 'Software'), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE
-
  * `Packet.parse(buffer)` returns an instance of `Packet`
  * `Packet.write(buffer, packet)` writes the given packet into the buffer,
 truncating where appropriate
@@ -48,3 +28,20 @@ var Packet = function () {
   this.payload = undefined;
 };
 ```
+
+## History
+
+###### 0.1.0 - October 2, 2014
+
+- Added TLSA support
+- Fixed EDNS & NAPTR support + deprecates some EDNS fields on Packet
+- Now includes support for forwarding EDNS responses (Packet.edns)
+- Added many TODOs with suggested improvements
+- Added many links to GH issues and RFCs
+- Cleaned up code a bit to better please linters
+- Added deprecation notices (see parseOpt)
+- Handle unhandled RRs on writing packet instead of throwing exception.
+- edns/opt should use BufferCursor.copy (Fixes #11)
+- Updated `package.json` to include all authors
+- Merged tj's `master` branch to add License info
+- Updated README to include history of changes
