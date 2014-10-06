@@ -169,9 +169,8 @@ function writeHeader(buff, packet) {
   val += (packet.header.res3 << 4) & 0x10;
   val += packet.header.rcode & 0xF;
   buff.writeUInt16BE(val & 0xFFFF);
-  assert(packet.question.length == 1, 'DNS requires one question');
-  // aren't used
-  buff.writeUInt16BE(1);
+  // question offset 4
+  buff.writeUInt16BE(packet.question.length & 0xFFFF);
   // answer offset 6
   buff.writeUInt16BE(packet.answer.length & 0xFFFF);
   // authority offset 8
@@ -233,7 +232,6 @@ function writeQuestion(buff, val, label_index) {
   namePack(val.name, buff, label_index);
   buff.writeUInt16BE(val.type & 0xFFFF);
   buff.writeUInt16BE(val.class & 0xFFFF);
-  return WRITE_RESOURCE_RECORD;
 }
 
 function writeResource(buff, val, label_index, rdata) {
@@ -411,14 +409,21 @@ Packet.write = function(buff, packet) {
       switch (state) {
         case WRITE_HEADER:
           state = writeHeader(buff, packet);
+          count = 0;
           break;
         case WRITE_TRUNCATE:
           state = writeTruncate(buff, packet, section, last_resource);
           break;
         case WRITE_QUESTION:
-          state = writeQuestion(buff, packet.question[0], label_index);
-          section = 'answer';
-          count = 0;
+          if(count === packet.question.length) {
+            state = WRITE_RESOURCE_RECORD;
+            section = 'answer';
+            count = 0;
+          }
+          else {
+            writeQuestion(buff, packet.question[count], label_index);
+            count += 1
+          }
           break;
         case WRITE_RESOURCE_RECORD:
           last_resource = buff.tell();
@@ -521,13 +526,20 @@ function parseHeader(msg, packet) {
 }
 
 function parseQuestion(msg, packet) {
-  var val = {};
-  val.name = nameUnpack(msg);
-  val.type = msg.readUInt16BE();
-  val.class = msg.readUInt16BE();
-  packet.question[0] = val;
-  assert(packet.question.length === 1);
-  // TODO handle qdcount > 1 in practice no one sends this
+  if (packet.header.opcode === 0 && // Standard query
+    packet.header.qr === 1 && // Response
+    packet.question.length === 0) { // Empty question can occur in mDNS
+    return PARSE_RESOURCE_RECORD;
+  }
+  var qnum = packet.question.length;
+  while (qnum > 0) {
+    var val = {};
+    val.name = nameUnpack(msg);
+    val.type = msg.readUInt16BE();
+    val.class = msg.readUInt16BE();
+    packet.question[packet.question.length - qnum] = val;
+    qnum -= 1;
+  }
   return PARSE_RESOURCE_RECORD;
 }
 
@@ -678,7 +690,7 @@ var
   PARSE_OPT   = consts.NAME_TO_QTYPE.OPT,
   PARSE_SPF   = consts.NAME_TO_QTYPE.SPF,
   PARSE_TLSA  = consts.NAME_TO_QTYPE.TLSA;
-  
+
 
 Packet.parse = function(msg) {
   var state,
