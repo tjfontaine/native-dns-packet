@@ -181,47 +181,37 @@ function writeHeader(buff, packet) {
   return WRITE_QUESTION;
 }
 
-function writeTruncate(buff, packet, section, val) {
-  // XXX FIXME TODO truncation is currently done wrong.
-  // Quote rfc2181 section 9
-  // The TC bit should not be set merely because some extra information
-  // could have been included, but there was insufficient room.  This
-  // includes the results of additional section processing.  In such cases
-  // the entire RRSet that will not fit in the response should be omitted,
-  // and the reply sent as is, with the TC bit clear.  If the recipient of
-  // the reply needs the omitted data, it can construct a query for that
-  // data and send that separately.
-  //
-  // TODO IOW only set TC if we hit it in ANSWERS otherwise make sure an
-  // entire RRSet is removed during a truncation.
-  var pos;
+function writeTruncate(buff, packet, section, last_resource, count) {
+  var val;
 
-  buff.seek(2);
-  val = buff.readUInt16BE();
-  val |= (1 << 9) & 0x200;
-  buff.seek(2);
-  buff.writeUInt16BE(val);
   switch (section) {
     case 'answer':
-      pos = 6;
-      // seek to authority and clear it and additional out
-      buff.seek(8);
-      buff.writeUInt16BE(0);
-      buff.writeUInt16BE(0);
-      break;
+      // set partial answer
+      buff.seek(6);
+      buff.writeUInt16BE(count - 1);
+
     case 'authority':
-      pos = 8;
-      // seek to additional and clear it out
+      // set truncate flag for answer and authority blocks
+      buff.seek(2);
+      val = buff.readUInt16BE();
+      val |= (1 << 9) & 0x200;
+      buff.seek(2);
+      buff.writeUInt16BE(val);
+
+      //set partial authority if overflow in authority section
+      buff.seek(6);
+      val = buff.readUInt16BE();
+      val = (section == 'answer' ? 0 : count - val - 1);
+      buff.seek(8);
+      buff.writeUInt16BE(val);
+
+    case 'additional':
+      // reset additional section
       buff.seek(10);
       buff.writeUInt16BE(0);
       break;
-    case 'additional':
-      pos = 10;
-      break;
   }
-  buff.seek(pos);
-  buff.writeUInt16BE(count - 1); // TODO: count not defined!
-  buff.seek(last_resource);      // TODO: last_resource not defined!
+  buff.seek(last_resource);
   return WRITE_END;
 }
 
@@ -413,7 +403,7 @@ Packet.write = function(buff, packet) {
           state = writeHeader(buff, packet);
           break;
         case WRITE_TRUNCATE:
-          state = writeTruncate(buff, packet, section, last_resource);
+          state = writeTruncate(buff, packet, section, last_resource, count);
           break;
         case WRITE_QUESTION:
           state = writeQuestion(buff, packet.question[0], label_index);
