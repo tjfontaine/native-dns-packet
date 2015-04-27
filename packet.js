@@ -152,7 +152,8 @@ var
   WRITE_SOA   = consts.NAME_TO_QTYPE.SOA,
   WRITE_OPT   = consts.NAME_TO_QTYPE.OPT,
   WRITE_NAPTR = consts.NAME_TO_QTYPE.NAPTR,
-  WRITE_TLSA  = consts.NAME_TO_QTYPE.TLSA;
+  WRITE_TLSA  = consts.NAME_TO_QTYPE.TLSA,
+  WRITE_URI   = consts.NAME_TO_QTYPE.URI;
 
 function writeHeader(buff, packet) {
   assert(packet.header, 'Packet requires "header"');
@@ -362,6 +363,18 @@ function writeTlsa(buff, val) {
   return WRITE_RESOURCE_DONE;
 }
 
+// URI: https://tools.ietf.org/html/draft-faltstrom-uri
+function writeUri(buff, val) {
+    assertUndefined(val.priority, 'URI record requires "priority"');
+    assertUndefined(val.weight, 'URI record requires "weight"');
+    assertUndefined(val.target, 'URI record requires "target"');
+    buff.writeUInt16BE(val.priority & 0xFFFF);
+    buff.writeUInt16BE(val.weight & 0xFFFF);
+    buff.write(val.target);
+    return WRITE_RESOURCE_DONE;
+}
+
+
 function makeEdns(packet) {
   packet.edns = {
     name: '',
@@ -480,6 +493,9 @@ Packet.write = function(buff, packet) {
           break;
         case WRITE_TLSA:
           state = writeTlsa(buff, val);
+          break;
+        case WRITE_URI:
+          state = writeUri(buff, val);
           break;
         case WRITE_END:
           return buff.tell();
@@ -658,6 +674,13 @@ function parseOpt(val, msg, rdata, packet) {
   return PARSE_RESOURCE_DONE;
 }
 
+function parseUri(val, msg, rdata) {
+    val.priority = msg.readUInt16BE();
+    val.weight = msg.readUInt16BE();
+    val.target = msg.slice(rdata.len - 4).toString('utf8');
+    return PARSE_RESOURCE_DONE;
+}
+
 var
   PARSE_HEADER          = 100000,
   PARSE_QUESTION        = 100001,
@@ -677,8 +700,9 @@ var
   PARSE_NAPTR = consts.NAME_TO_QTYPE.NAPTR,
   PARSE_OPT   = consts.NAME_TO_QTYPE.OPT,
   PARSE_SPF   = consts.NAME_TO_QTYPE.SPF,
-  PARSE_TLSA  = consts.NAME_TO_QTYPE.TLSA;
-  
+  PARSE_TLSA  = consts.NAME_TO_QTYPE.TLSA,
+  PARSE_URI   = consts.NAME_TO_QTYPE.URI;
+
 
 Packet.parse = function(msg) {
   var state,
@@ -766,6 +790,9 @@ Packet.parse = function(msg) {
         break;
       case PARSE_TLSA:
         state = parseTlsa(val, msg, rdata);
+        break;
+      case PARSE_URI:
+        state = parseUri(val, msg, rdata);
         break;
       case PARSE_END:
         return packet;
