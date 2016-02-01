@@ -229,7 +229,7 @@ function writeQuestion(buff, val, label_index) {
   assert(val, 'Packet requires a question');
   assertUndefined(val.name, 'Question requires a "name"');
   assertUndefined(val.type, 'Question requires a "type"');
-  assertUndefined(val.class, 'Questionn requires a "class"');
+  assertUndefined(val.class, 'Question requires a "class"');
   namePack(val.name, buff, label_index);
   buff.writeUInt16BE(val.type & 0xFFFF);
   buff.writeUInt16BE(val.class & 0xFFFF);
