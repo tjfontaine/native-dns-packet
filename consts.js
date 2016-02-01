@@ -86,16 +86,26 @@ var NAME_TO_QTYPE = exports.NAME_TO_QTYPE = {
   NSEC3: 50,
   NSEC3PARAM: 51,
   TLSA: 52,
+  SMIMEA: 53,
   HIP: 55,
   NINFO: 56,
   RKEY: 57,
   TALINK: 58,
   CDS: 59,
+  CDNSKEY: 60,
+  OPENPGPKEY: 61,
+  CSYNC: 62,
   SPF: 99,
   UINFO: 100,
   UID: 101,
   GID: 102,
   UNSPEC: 103,
+  NID: 104,
+  L32: 105,
+  L64: 106,
+  LP: 107,
+  EUI48: 108,
+  EUI64: 109,
   TKEY: 249,
   TSIG: 250,
   IXFR: 251,
@@ -119,7 +129,11 @@ exports.qtypeToName = function(t) {
 };
 
 var NAME_TO_QCLASS = exports.NAME_TO_QCLASS = {
-  IN: 1
+  IN: 1,
+  CH: 3,
+  HS: 4,
+  NONE: 254,
+  ANY: 255
 };
 exports.QCLASS_TO_NAME = reverse_map(NAME_TO_QCLASS);
 
