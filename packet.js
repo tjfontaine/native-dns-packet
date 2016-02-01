@@ -169,9 +169,8 @@ function writeHeader(buff, packet) {
   val += (packet.header.res3 << 4) & 0x10;
   val += packet.header.rcode & 0xF;
   buff.writeUInt16BE(val & 0xFFFF);
-  assert(packet.question.length == 1, 'DNS requires one question');
-  // aren't used
-  buff.writeUInt16BE(1);
+  // question offset 4
+  buff.writeUInt16BE(packet.question.length & 0xFFFF);
   // answer offset 6
   buff.writeUInt16BE(packet.answer.length & 0xFFFF);
   // authority offset 8
@@ -233,7 +232,7 @@ function writeQuestion(buff, val, label_index) {
   namePack(val.name, buff, label_index);
   buff.writeUInt16BE(val.type & 0xFFFF);
   buff.writeUInt16BE(val.class & 0xFFFF);
-  return WRITE_RESOURCE_RECORD;
+  return WRITE_QUESTION;
 }
 
 function writeResource(buff, val, label_index, rdata) {
@@ -390,7 +389,7 @@ Packet.write = function(buff, packet) {
   var state = WRITE_HEADER,
       val,
       section,
-      count,
+      count = 0,
       rdata,
       last_resource,
       label_index = {};
@@ -416,9 +415,14 @@ Packet.write = function(buff, packet) {
           state = writeTruncate(buff, packet, section, last_resource);
           break;
         case WRITE_QUESTION:
-          state = writeQuestion(buff, packet.question[0], label_index);
-          section = 'answer';
-          count = 0;
+          if (count < packet.question.length) {
+            state = writeQuestion(buff, packet.question[count], label_index);
+            count += 1;
+          } else {
+            state = WRITE_RESOURCE_RECORD;
+            section = 'answer';
+            count = 0;
+          }
           break;
         case WRITE_RESOURCE_RECORD:
           last_resource = buff.tell();
@@ -520,15 +524,11 @@ function parseHeader(msg, packet) {
   return PARSE_QUESTION;
 }
 
-function parseQuestion(msg, packet) {
-  var val = {};
+function parseQuestion(msg, val, packet) {
   val.name = nameUnpack(msg);
   val.type = msg.readUInt16BE();
   val.class = msg.readUInt16BE();
-  packet.question[0] = val;
-  assert(packet.question.length === 1);
-  // TODO handle qdcount > 1 in practice no one sends this
-  return PARSE_RESOURCE_RECORD;
+  return PARSE_QUESTION;
 }
 
 function parseRR(msg, val, rdata) {
@@ -686,7 +686,7 @@ Packet.parse = function(msg) {
       val,
       rdata,
       section,
-      count;
+      count = 0;
 
   var packet = new Packet();
 
@@ -701,9 +701,15 @@ Packet.parse = function(msg) {
         state = parseHeader(msg, packet);
         break;
       case PARSE_QUESTION:
-        state = parseQuestion(msg, packet);
-        section = 'answer';
-        count = 0;
+        if (count < packet.question.length) {
+          val = packet.question[count] = {}
+          state = parseQuestion(msg, val, packet);
+          count += 1;
+        } else {
+          state = PARSE_RESOURCE_RECORD;
+          section = 'answer';
+          count = 0;
+        }
         break;
       case PARSE_RESOURCE_RECORD:
         // console.log('PARSE_RESOURCE_RECORD: count = %d, %s.len = %d', count, section, packet[section].length);
