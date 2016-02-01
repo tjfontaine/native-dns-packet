@@ -17,7 +17,7 @@ files.forEach(function (file) {
     var js = 'foo = ' + fs.readFileSync(jsFile, 'utf8');
     js = vm.runInThisContext(js, jsFile);
     var ret = Packet.parse(bin);
-    t.equivalent(ret, js);
+    t.same(ret, js, 'parsed packet equals fixture');
     t.end();
   });
 });
