@@ -137,6 +137,15 @@ var NAME_TO_QCLASS = exports.NAME_TO_QCLASS = {
 };
 exports.QCLASS_TO_NAME = reverse_map(NAME_TO_QCLASS);
 
+var NAME_TO_OPCODE = exports.NAME_TO_OPCODE = {
+  QUERY: 0,
+  IQUERY: 1,
+  STATUS: 2,
+  NOTIFY: 4,
+  UPDATE: 5
+};
+exports.OPCODE_TO_NAME = reverse_map(NAME_TO_OPCODE);
+
 exports.FAMILY_TO_QTYPE = {
   4: NAME_TO_QTYPE.A,
   6: NAME_TO_QTYPE.AAAA
