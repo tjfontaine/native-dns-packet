@@ -45,8 +45,8 @@ var Packet = module.exports = function() {
     tc: 0,
     rd: 1,
     ra: 0,
-    res1: 0,
-    res2: 0,
+    cd: 0,
+    ad: 0,
     res3: 0,
     rcode: 0
   };
@@ -54,8 +54,20 @@ var Packet = module.exports = function() {
   this.answer = [];
   this.authority = [];
   this.additional = [];
-  this.edns_options = [];   // TODO: DEPRECATED! Use `.edns.options` instead!
-  this.payload = undefined; // TODO: DEPRECATED! Use `.edns.payload` instead!
+  this.edns = {
+    name: '',
+    type: consts.NAME_TO_QTYPE.OPT,
+    class: 0,
+    options: [],
+    ttl: 0,
+  };
+
+  // Convenience
+  this.edns.set_size = function(x) { this.class = x},
+  this.edns.set_do = function() { this.ttl |= 37268 }
+
+  this.edns.get_size = function(x) { this.class },
+  this.edns.get_do = function() { return (this.ttl & 32768) >> 15 }
 };
 
 var LABEL_POINTER = 0xC0;
@@ -164,8 +176,8 @@ function writeHeader(buff, packet) {
   val += (packet.header.tc << 9) & 0x200;
   val += (packet.header.rd << 8) & 0x100;
   val += (packet.header.ra << 7) & 0x80;
-  val += (packet.header.res1 << 6) & 0x40;
-  val += (packet.header.res2 << 5) & 0x20;
+  val += (packet.header.cd << 6) & 0x40;
+  val += (packet.header.ad << 5) & 0x20;
   val += (packet.header.res3 << 4) & 0x10;
   val += packet.header.rcode & 0xF;
   buff.writeUInt16BE(val & 0xFFFF);
@@ -363,15 +375,10 @@ function writeTlsa(buff, val) {
 }
 
 function makeEdns(packet) {
-  packet.edns = {
-    name: '',
-    type: consts.NAME_TO_QTYPE.OPT,
-    class: packet.payload,
-    options: [],
-    ttl: 0
-  };
-  packet.edns_options = packet.edns.options; // TODO: 'edns_options' is DEPRECATED!
-  packet.additional.push(packet.edns);
+  // If class (Size) or TTL (options) are defined, use them
+  if (packet.edns.class || packet.edns.ttl) {
+      packet.additional.push(packet.edns);
+  }
   return WRITE_HEADER;
 }
 
@@ -397,12 +404,7 @@ Packet.write = function(buff, packet) {
 
   buff = new BufferCursor(buff);
 
-  // the existence of 'edns' in a packet indicates that a proper OPT record exists
-  // in 'additional' and that all of the other fields in packet (that are parsed by
-  // 'parseOpt') are properly set. If it does not exist, we assume that the user
-  // is requesting that we create one for them.
-  if (typeof packet.edns_version !== 'undefined' && typeof packet.edns === "undefined")
-    state = makeEdns(packet);
+  state = makeEdns(packet);
 
   // TODO: this is unnecessarily inefficient. rewrite this using a
   //       function table instead. (same for Packet.parse too).
@@ -509,8 +511,8 @@ function parseHeader(msg, packet) {
   packet.header.tc = (val & 0x200) >> 9;
   packet.header.rd = (val & 0x100) >> 8;
   packet.header.ra = (val & 0x80) >> 7;
-  packet.header.res1 = (val & 0x40) >> 6;
-  packet.header.res2 = (val & 0x20) >> 5;
+  packet.header.cd = (val & 0x40) >> 6;
+  packet.header.ad = (val & 0x20) >> 5;
   packet.header.res3 = (val & 0x10) >> 4;
   packet.header.rcode = (val & 0xF);
   packet.question = new Array(msg.readUInt16BE());
@@ -642,12 +644,6 @@ function parseOpt(val, msg, rdata, packet) {
 
   packet.edns = val;
   packet.edns_version = val.version; // TODO: return BADVERS for unsupported version! (Section 6.1.3)
-
-  // !! BEGIN DEPRECATION NOTICE !!
-  // THESE FIELDS MAY BE REMOVED IN THE FUTURE!
-  packet.edns_options = val.options;
-  packet.payload = val.class;
-  // !! END DEPRECATION NOTICE !!
 
   while (!rdata.buf.eof()) {
     val.options.push({
