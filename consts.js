@@ -154,6 +154,44 @@ exports.NAME_TO_RCODE = {
 };
 exports.RCODE_TO_NAME = reverse_map(exports.NAME_TO_RCODE);
 
+// http://www.iana.org/assignments/dns-sec-alg-numbers
+var DNSSEC_ALGO_NAME_TO_NUM = exports.DNSSEC_ALGO_NAME_TO_NUM = {
+  RSAMD5: 1,
+  DH: 2,
+  DSA: 3,
+  RSASHA1: 5,
+  DSANSEC3SHA1: 6,
+  RSASHA1NSEC3SHA1: 7,
+  RSASHA256: 8,
+  RSASHA512: 10,
+  ECCGOST: 12,
+  ECDSAP256SHA256: 13,
+  ECDSAP384SHA384: 14,
+  INDIRECT: 252,
+  PRIVATEDNS: 253,
+  PRIVATEOID: 254
+};
+
+exports.DNSSEC_NUM_TO_ALGO_NAME = reverse_map(DNSSEC_ALGO_NAME_TO_NUM);
+
+// https://www.ietf.org/rfc/rfc4034.txt
+var DNSKEY_NAME_TO_NUM = exports.DNSKEY_NAME_TO_NUM = {
+  NONE: 0,
+  ZSK: 256,
+  KSK: 257
+};
+
+exports.DNSKEY_NUM_TO_NAME = reverse_map(DNSKEY_NAME_TO_NUM);
+
+var DIGEST_TO_NUM = exports.DIGEST_TO_NUM = {
+  SHA1: 1,
+  SHA256: 2,
+  GOST3411: 3,
+  SHA384: 4
+};
+
+exports.DIGEST_NAME_TO_NUM = reverse_map(DIGEST_TO_NUM);
+
 exports.BADNAME = 'EBADNAME';
 exports.BADRESP = 'EBADRESP';
 exports.CONNREFUSED = 'ECONNREFUSED';
