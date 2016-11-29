@@ -167,7 +167,7 @@ function writeHeader(buff, packet) {
   val += (packet.header.res1 << 6) & 0x40;
   val += (packet.header.res2 << 5) & 0x20;
   val += (packet.header.res3 << 4) & 0x10;
-  val += packet.header.rcode & 0xF;
+  val += packet.header.rcode & 0x1F;
   buff.writeUInt16BE(val & 0xFFFF);
   assert(packet.question.length == 1, 'DNS requires one question');
   // aren't used
