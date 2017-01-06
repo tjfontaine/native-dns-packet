@@ -36,6 +36,10 @@ function assertUndefined(val, msg) {
   assert(typeof val != 'undefined', msg);
 }
 
+function hasType(type) {
+  return this.types.indexOf(type) !== -1;
+}
+
 var Packet = module.exports = function() {
   this.header = {
     id: 0,
@@ -46,8 +50,8 @@ var Packet = module.exports = function() {
     rd: 1,
     ra: 0,
     res1: 0,
-    res2: 0,
-    res3: 0,
+    ad: 0,
+    cd: 0,
     rcode: 0
   };
   this.question = [];
@@ -58,24 +62,27 @@ var Packet = module.exports = function() {
   this.payload = undefined; // TODO: DEPRECATED! Use `.edns.payload` instead!
 };
 
-var LABEL_POINTER = 0xC0;
+var LABEL_POINTER = exports.LABEL_POINTER = 0xC0;
 
-var isPointer = function(len) {
+var isPointer = exports.isPointer = function(len) {
   return (len & LABEL_POINTER) === LABEL_POINTER;
 };
 
-function nameUnpack(buff) {
-  var len, comp, end, pos, part, combine = '';
+var nameUnpack = exports.nameUnpack = function(buff) {
+  var len, comp, rawStart, rawEnd, end, pos, part, combine = '', raw;
 
+  rawStart = buff.tell();
   len = buff.readUInt8();
   comp = false;
   end = buff.tell();
+  rawEnd = buff.tell();
 
   while (len !== 0) {
     if (isPointer(len)) {
       len -= LABEL_POINTER;
       len = len << 8;
       pos = len + buff.readUInt8();
+      rawStart = pos;
       if (!comp)
         end = buff.tell();
       buff.seek(pos);
@@ -92,21 +99,44 @@ function nameUnpack(buff) {
       combine = part;
 
     len = buff.readUInt8();
+    if(comp)
+      rawEnd = buff.tell();
 
-    if (!comp)
+    if (!comp) {
       end = buff.tell();
+      rawEnd = buff.tell();
+    }
   }
+
+  if(len === 0)
+    combine += '.';
+
+  // Return Raw Name Data
+  buff.seek(rawStart);
+  raw = new BufferCursor(new Buffer(rawEnd-rawStart));
+  raw.copy(buff, rawStart, rawEnd);
+  raw.seek(0);
+  var rawBytes = raw.toByteArray();
 
   buff.seek(end);
 
-  return combine;
-}
+  return {
+    name: combine,
+    raw: rawBytes
+  };
+};
 
-function namePack(str, buff, index) {
+var namePack = exports.namePack = function(str, buff, index, canonical) {
   var offset, dot, part;
+  var isCanonical = canonical || false;
+
+  if(str == ".") {
+    buff.writeUInt8(0);
+    return;
+  }
 
   while (str) {
-    if (index[str]) {
+    if (index[str] && !isCanonical) {
       offset = (LABEL_POINTER << 8) + index[str];
       buff.writeUInt16BE(offset);
       break;
@@ -128,6 +158,71 @@ function namePack(str, buff, index) {
   if (!str) {
     buff.writeUInt8(0);
   }
+};
+
+/* Handle TypeBitmap data types */
+function parseTypeBitmap(buff) {
+  var types = [];
+  var lastbase = -1;
+  while(!buff.eof()) {
+
+    if((buff.length - buff.tell()) <  2) throw "invalid bitmap descriptor";
+
+    var mapbase = buff.readUInt8();
+    if(mapbase < lastbase) throw "invalid ordering";
+
+    var maplength = buff.readUInt8();
+    if(maplength > (buff.length - buff.tell())) throw "invalid bitmap";
+
+
+    for(var i = 0; i < maplength; i++) {
+      var current = buff.readUInt8();
+      if(current === 0) continue;
+      for(var j = 0; j < 8; j++) {
+        if((current & (1 << (7-j))) === 0) continue;
+        var typecode = mapbase * 256 + i*8 + j;
+        types.push(typecode);
+      }
+    }
+  }
+  return types;
+}
+
+function writeTypeBitmap(buff, types) {
+  if(types.length === 0) return;
+
+  var mapbase = -1;
+  var map = [];
+  for(var i = 0; i < types.length; i++) {
+    var t = types[i];
+    var base = t >> 8;
+    if (base !== mapbase) {
+      if(map.length > 0) {
+        mapToWire(buff, map, mapbase);
+        map = [];
+      }
+      mapbase = base;
+    }
+    map.push(t);
+    map.sort(function(a, b){return a-b});
+  }
+  mapToWire(buff, map, mapbase);
+}
+
+function mapToWire(buff, map, mapbase) {
+  var arraymax = map[map.length - 1] & 0xFF;
+  var arraylength = Math.floor(arraymax / 8) + 1;
+  var array = Array.apply(null, new Array(arraylength)).map(Number.prototype.valueOf, 0);
+
+  buff.writeUInt8(mapbase);
+  buff.writeUInt8(arraylength);
+  for(var i = 0; i < map.length; i++) {
+    var typecode = map[i];
+    array[Math.floor((typecode & 0xFF) / 8)] |= (1 << ( 7 - typecode % 8));
+  }
+  for(var j = 0; j < arraylength; j++) {
+    buff.writeUInt8(array[j]);
+  }
 }
 
 var
@@ -140,21 +235,26 @@ var
   WRITE_RESOURCE_END        = 100007,
   WRITE_EDNS                = 100008,
   WRITE_END                 = 100009,
-  WRITE_A     = consts.NAME_TO_QTYPE.A,
-  WRITE_AAAA  = consts.NAME_TO_QTYPE.AAAA,
-  WRITE_NS    = consts.NAME_TO_QTYPE.NS,
-  WRITE_CNAME = consts.NAME_TO_QTYPE.CNAME,
-  WRITE_PTR   = consts.NAME_TO_QTYPE.PTR,
-  WRITE_SPF   = consts.NAME_TO_QTYPE.SPF,
-  WRITE_MX    = consts.NAME_TO_QTYPE.MX,
-  WRITE_SRV   = consts.NAME_TO_QTYPE.SRV,
-  WRITE_TXT   = consts.NAME_TO_QTYPE.TXT,
-  WRITE_SOA   = consts.NAME_TO_QTYPE.SOA,
-  WRITE_OPT   = consts.NAME_TO_QTYPE.OPT,
-  WRITE_NAPTR = consts.NAME_TO_QTYPE.NAPTR,
-  WRITE_TLSA  = consts.NAME_TO_QTYPE.TLSA;
+  WRITE_A          = consts.NAME_TO_QTYPE.A,
+  WRITE_AAAA       = consts.NAME_TO_QTYPE.AAAA,
+  WRITE_NS         = consts.NAME_TO_QTYPE.NS,
+  WRITE_CNAME      = consts.NAME_TO_QTYPE.CNAME,
+  WRITE_PTR        = consts.NAME_TO_QTYPE.PTR,
+  WRITE_SPF        = consts.NAME_TO_QTYPE.SPF,
+  WRITE_MX         = consts.NAME_TO_QTYPE.MX,
+  WRITE_SRV        = consts.NAME_TO_QTYPE.SRV,
+  WRITE_TXT        = consts.NAME_TO_QTYPE.TXT,
+  WRITE_SOA        = consts.NAME_TO_QTYPE.SOA,
+  WRITE_OPT        = consts.NAME_TO_QTYPE.OPT,
+  WRITE_NAPTR      = consts.NAME_TO_QTYPE.NAPTR,
+  WRITE_DS         = consts.NAME_TO_QTYPE.DS,
+  WRITE_RRSIG      = consts.NAME_TO_QTYPE.RRSIG,
+  WRITE_DNSKEY     = consts.NAME_TO_QTYPE.DNSKEY,
+  WRITE_NSEC3      = consts.NAME_TO_QTYPE.NSEC3,
+  WRITE_NSEC3PARAM = consts.NAME_TO_QTYPE.NSEC3PARAM,
+  WRITE_TLSA       = consts.NAME_TO_QTYPE.TLSA;
 
-function writeHeader(buff, packet) {
+var writeHeader = Packet.writeHeader = function(buff, packet) {
   assert(packet.header, 'Packet requires "header"');
   buff.writeUInt16BE(packet.header.id & 0xFFFF);
   var val = 0;
@@ -165,8 +265,8 @@ function writeHeader(buff, packet) {
   val += (packet.header.rd << 8) & 0x100;
   val += (packet.header.ra << 7) & 0x80;
   val += (packet.header.res1 << 6) & 0x40;
-  val += (packet.header.res2 << 5) & 0x20;
-  val += (packet.header.res3 << 4) & 0x10;
+  val += (packet.header.ad << 5) & 0x20;
+  val += (packet.header.cd << 4) & 0x10;
   val += packet.header.rcode & 0xF;
   buff.writeUInt16BE(val & 0xFFFF);
   assert(packet.question.length == 1, 'DNS requires one question');
@@ -179,9 +279,9 @@ function writeHeader(buff, packet) {
   // additional offset 10
   buff.writeUInt16BE(packet.additional.length & 0xFFFF);
   return WRITE_QUESTION;
-}
+};
 
-function writeTruncate(buff, packet, section, val) {
+var writeTruncate = Packet.writeTruncate = function(buff, packet, section, val) {
   // XXX FIXME TODO truncation is currently done wrong.
   // Quote rfc2181 section 9
   // The TC bit should not be set merely because some extra information
@@ -223,9 +323,9 @@ function writeTruncate(buff, packet, section, val) {
   buff.writeUInt16BE(count - 1); // TODO: count not defined!
   buff.seek(last_resource);      // TODO: last_resource not defined!
   return WRITE_END;
-}
+};
 
-function writeQuestion(buff, val, label_index) {
+var writeQuestion = Packet.writeQuestion = function(buff, val, label_index) {
   assert(val, 'Packet requires a question');
   assertUndefined(val.name, 'Question requires a "name"');
   assertUndefined(val.type, 'Question requires a "type"');
@@ -234,9 +334,9 @@ function writeQuestion(buff, val, label_index) {
   buff.writeUInt16BE(val.type & 0xFFFF);
   buff.writeUInt16BE(val.class & 0xFFFF);
   return WRITE_RESOURCE_RECORD;
-}
+};
 
-function writeResource(buff, val, label_index, rdata) {
+var writeResource = Packet.writeResource = function(buff, val, label_index, rdata) {
   assert(val, 'Resource must be defined');
   assertUndefined(val.name, 'Resource record requires "name"');
   assertUndefined(val.type, 'Resource record requires "type"');
@@ -250,17 +350,17 @@ function writeResource(buff, val, label_index, rdata) {
   buff.writeUInt16BE(0); // if there is rdata, then this value will be updated
                          // to the correct value by 'writeResourceDone'
   return val.type;
-}
+};
 
-function writeResourceDone(buff, rdata) {
+var writeResourceDone = Packet.writeResourceDone = function(buff, rdata) {
   var pos = buff.tell();
   buff.seek(rdata.pos);
   buff.writeUInt16BE(pos - rdata.pos - 2);
   buff.seek(pos);
   return WRITE_RESOURCE_RECORD;
-}
+};
 
-function writeIp(buff, val) {
+var writeIp = Packet.writeIp = function(buff, val) {
   //TODO XXX FIXME -- assert that address is of proper type
   assertUndefined(val.address, 'A/AAAA record requires "address"');
   val = ipaddr.parse(val.address).toByteArray();
@@ -268,17 +368,17 @@ function writeIp(buff, val) {
     buff.writeUInt8(b);
   });
   return WRITE_RESOURCE_DONE;
-}
+};
 
-function writeCname(buff, val, label_index) {
+var writeCname = Packet.writeCname = function(buff, val, label_index) {
   assertUndefined(val.data, 'NS/CNAME/PTR record requires "data"');
   namePack(val.data, buff, label_index);
   return WRITE_RESOURCE_DONE;
-}
+};
 
 // For <character-string> see: http://tools.ietf.org/html/rfc1035#section-3.3
 // For TXT: http://tools.ietf.org/html/rfc1035#section-3.3.14
-function writeTxt(buff, val) {
+var writeTxt = Packet.writeTxt = function(buff, val) {
   //TODO XXX FIXME -- split on max char string and loop
   assertUndefined(val.data, 'TXT record requires "data"');
   for (var i=0,len=val.data.length; i<len; i++) {
@@ -287,19 +387,19 @@ function writeTxt(buff, val) {
     buff.write(val.data[i], dataLen, 'utf8');
   }
   return WRITE_RESOURCE_DONE;
-}
+};
 
-function writeMx(buff, val, label_index) {
+var writeMx = Packet.writeMx = function(buff, val, label_index) {
   assertUndefined(val.priority, 'MX record requires "priority"');
   assertUndefined(val.exchange, 'MX record requires "exchange"');
   buff.writeUInt16BE(val.priority & 0xFFFF);
   namePack(val.exchange, buff, label_index);
   return WRITE_RESOURCE_DONE;
-}
+};
 
 // SRV: https://tools.ietf.org/html/rfc2782
 // TODO: SRV fixture failing for '_xmpp-server._tcp.gmail.com.srv.js'
-function writeSrv(buff, val, label_index) {
+var writeSrv = Packet.writeSrv = function(buff, val, label_index) {
   assertUndefined(val.priority, 'SRV record requires "priority"');
   assertUndefined(val.weight, 'SRV record requires "weight"');
   assertUndefined(val.port, 'SRV record requires "port"');
@@ -309,9 +409,9 @@ function writeSrv(buff, val, label_index) {
   buff.writeUInt16BE(val.port & 0xFFFF);
   namePack(val.target, buff, label_index);
   return WRITE_RESOURCE_DONE;
-}
+};
 
-function writeSoa(buff, val, label_index) {
+var writeSoa = Packet.writeSoa = function(buff, val, label_index, canonical) {
   assertUndefined(val.primary, 'SOA record requires "primary"');
   assertUndefined(val.admin, 'SOA record requires "admin"');
   assertUndefined(val.serial, 'SOA record requires "serial"');
@@ -319,18 +419,18 @@ function writeSoa(buff, val, label_index) {
   assertUndefined(val.retry, 'SOA record requires "retry"');
   assertUndefined(val.expiration, 'SOA record requires "expiration"');
   assertUndefined(val.minimum, 'SOA record requires "minimum"');
-  namePack(val.primary, buff, label_index);
-  namePack(val.admin, buff, label_index);
+  namePack(val.primary, buff, label_index, canonical);
+  namePack(val.admin, buff, label_index, canonical);
   buff.writeUInt32BE(val.serial & 0xFFFFFFFF);
   buff.writeInt32BE(val.refresh & 0xFFFFFFFF);
   buff.writeInt32BE(val.retry & 0xFFFFFFFF);
   buff.writeInt32BE(val.expiration & 0xFFFFFFFF);
   buff.writeInt32BE(val.minimum & 0xFFFFFFFF);
   return WRITE_RESOURCE_DONE;
-}
+};
 
 // http://tools.ietf.org/html/rfc3403#section-4.1
-function writeNaptr(buff, val, label_index) {
+var writeNaptr = Packet.writeNaptr = function(buff, val, label_index) {
   assertUndefined(val.order, 'NAPTR record requires "order"');
   assertUndefined(val.preference, 'NAPTR record requires "preference"');
   assertUndefined(val.flags, 'NAPTR record requires "flags"');
@@ -347,10 +447,10 @@ function writeNaptr(buff, val, label_index) {
   buff.write(val.regexp, val.regexp.length, 'ascii');
   namePack(val.replacement, buff, label_index);
   return WRITE_RESOURCE_DONE;
-}
+};
 
 // https://tools.ietf.org/html/rfc6698
-function writeTlsa(buff, val) {
+var writeTlsa = Packet.writeTlsa = function(buff, val) {
   assertUndefined(val.usage, 'TLSA record requires "usage"');
   assertUndefined(val.selector, 'TLSA record requires "selector"');
   assertUndefined(val.matchingtype, 'TLSA record requires "matchingtype"');
@@ -360,7 +460,102 @@ function writeTlsa(buff, val) {
   buff.writeUInt8(val.matchingtype);
   buff.copy(val.buff);
   return WRITE_RESOURCE_DONE;
-}
+};
+
+var writeRrsig = Packet.writeRrsig = function(buff, val, label_index) {
+  assertUndefined(val.typeCovered, 'RRSIG record requires "typeCovered');
+  assertUndefined(val.algorithm, 'RRSIG record requires "algorithm');
+  assertUndefined(val.labels, 'RRSIG record requires "labels');
+  assertUndefined(val.originalTtl, 'RRSIG record requires "originalTtl');
+  assertUndefined(val.signatureExpiration, 'RRSIG record requires "signatureExpiration');
+  assertUndefined(val.signatureInception, 'RRSIG record requires "signatureInception');
+  assertUndefined(val.keytag, 'RRSIG record requires "keytag');
+  assertUndefined(val.signerName, 'RRSIG record requires "signerName');
+  assertUndefined(val.signature, 'RRSIG record requires "signature');
+
+  buff.writeUInt16BE(val.typeCovered);
+  buff.writeUInt8(val.algorithm);
+  buff.writeUInt8(val.labels);
+  buff.writeUInt32BE(val.originalTtl);
+  buff.writeUInt32BE(val.signatureExpiration.getTime() / 1000);
+  buff.writeUInt32BE(val.signatureInception.getTime() / 1000);
+  buff.writeUInt16BE(val.keytag);
+  namePack(val.signerName, buff, label_index);
+  buff.copy(val.signature);
+
+  return WRITE_RESOURCE_DONE;
+};
+
+var writeDs = Packet.writeDs = function(buff, val) {
+  assertUndefined(val.keytag, 'DS record requires "keytag"');
+  assertUndefined(val.algorithm, 'DS record requires "algorithm');
+  assertUndefined(val.digestType, 'DS record requires "digestType');
+  assertUndefined(val.digest, 'DS record requires "digest');
+
+  buff.writeUInt16BE(val.keytag & 0xFFFF);
+  buff.writeUInt8(val.algorithm);
+  buff.writeUInt8(val.digestType);
+  buff.copy(val.digest);
+
+  return WRITE_RESOURCE_DONE;
+};
+
+var writeDnskey = Packet.writeDnskey = function(buff, val) {
+  assertUndefined(val.flags, 'DNSKEY record requires "keytag"');
+  assertUndefined(val.protocol, 'DNSKEY record requires "protocol"');
+  assertUndefined(val.algorithm, 'DNSKEY record requires "algorithm"');
+  assertUndefined(val.publicKey, 'DNSKEY record requires "publicKey"');
+
+  buff.writeUInt16BE(val.flags);
+  buff.writeUInt8(val.protocol);
+  buff.writeUInt8(val.algorithm);
+  buff.copy(val.publicKey);
+
+  return WRITE_RESOURCE_DONE;
+};
+
+var writeNsec = Packet.writeNsec = function (buff, val, label_index) {
+  assertUndefined(val.next, 'NSEC record requires "next"');
+  assertUndefined(val.types, 'NSEC record requires "types');
+  namePack(val.next, buff, label_index, true);
+  writeTypeBitmap(buff, val.types);
+  return WRITE_RESOURCE_DONE;
+};
+
+var writeNsec3 = Packet.writeNsec3 = function(buff, val, label_index) {
+  assertUndefined(val.hashAlgorithm, 'NSEC3 record requires "hashAlgorithm"');
+  assertUndefined(val.flags, 'NSEC3 record requires "flags"');
+  assertUndefined(val.iterations, 'NSEC3 record requires "iterations"');
+  assertUndefined(val.salt, 'NSEC3 record requires "salt"');
+  assertUndefined(val.nextHashedOwnerName, 'NSEC3 record requires "nextHashedOwnerName"');
+
+  buff.writeUInt8(val.hashAlgorithm);
+  buff.writeUInt8(val.flags);
+  buff.writeUInt16BE(val.iterations);
+
+  buff.writeUInt8(val.salt.length);
+  buff.copy(val.salt);
+
+  buff.writeUInt8(val.nextHashedOwnerName.length);
+  buff.copy(val.nextHashedOwnerName);
+  writeTypeBitmap(buff, val.types);
+
+  return WRITE_RESOURCE_DONE;
+};
+
+var writeNsec3Param = Packet.writeNsec3Param = function(buff, val, label_index) {
+  assertUndefined(val.hashAlgorithm, 'NSEC3PARAM record requires "hashAlgorithm"');
+  assertUndefined(val.flags, 'NSEC3PARAM record requires "flags"');
+  assertUndefined(val.iterations, 'NSEC3PARAM record requires "iterations"');
+  assertUndefined(val.salt, 'NSEC3PARAM record requires "salt"');
+
+  buff.writeUInt8(val.hashAlgorithm);
+  buff.writeUInt8(val.flags);
+  buff.writeUInt16BE(val.iterations);
+  namePack(val.salt, buff, label_index);
+
+  return WRITE_RESOURCE_DONE;
+};
 
 function makeEdns(packet) {
   packet.edns = {
@@ -371,11 +566,16 @@ function makeEdns(packet) {
     ttl: 0
   };
   packet.edns_options = packet.edns.options; // TODO: 'edns_options' is DEPRECATED!
+
+  // Handle DNSSEC Request
+  if(packet.do) {
+    packet.edns.ttl = 0x8000;
+  }
   packet.additional.push(packet.edns);
   return WRITE_HEADER;
 }
 
-function writeOpt(buff, val) {
+var writeOpt = Packet.writeOpt = function(buff, val) {
   var opt;
   for (var i=0, len=val.options.length; i<len; i++) {
     opt = val.options[i];
@@ -384,7 +584,7 @@ function writeOpt(buff, val) {
     buff.copy(opt.data);
   }
   return WRITE_RESOURCE_DONE;
-}
+};
 
 Packet.write = function(buff, packet) {
   var state = WRITE_HEADER,
@@ -478,6 +678,21 @@ Packet.write = function(buff, packet) {
         case WRITE_NAPTR:
           state = writeNaptr(buff, val, label_index);
           break;
+        case WRITE_DS:
+          state = writeDs(buff, val);
+          break;
+        case WRITE_RRSIG:
+          state = writeRrsig(buff, val, label_index);
+          break;
+        case WRITE_DNSKEY:
+          state = writeDnskey(buff, val);
+          break;
+        case WRITE_NSEC3:
+          state = writeNsec3(buff, val, label_index);
+          break;
+        case WRITE_NSEC3PARAM:
+          state = writeNsec3Param(buff, val, label_index);
+          break;
         case WRITE_TLSA:
           state = writeTlsa(buff, val);
           break;
@@ -510,8 +725,8 @@ function parseHeader(msg, packet) {
   packet.header.rd = (val & 0x100) >> 8;
   packet.header.ra = (val & 0x80) >> 7;
   packet.header.res1 = (val & 0x40) >> 6;
-  packet.header.res2 = (val & 0x20) >> 5;
-  packet.header.res3 = (val & 0x10) >> 4;
+  packet.header.ad = (val & 0x20) >> 5;
+  packet.header.cd = (val & 0x10) >> 4;
   packet.header.rcode = (val & 0xF);
   packet.question = new Array(msg.readUInt16BE());
   packet.answer = new Array(msg.readUInt16BE());
@@ -522,7 +737,9 @@ function parseHeader(msg, packet) {
 
 function parseQuestion(msg, packet) {
   var val = {};
-  val.name = nameUnpack(msg);
+  var nameret = nameUnpack(msg);
+  val.name = nameret.name;
+  val.nameRaw = nameret.raw;
   val.type = msg.readUInt16BE();
   val.class = msg.readUInt16BE();
   packet.question[0] = val;
@@ -532,7 +749,9 @@ function parseQuestion(msg, packet) {
 }
 
 function parseRR(msg, val, rdata) {
-  val.name = nameUnpack(msg);
+  var nameret = nameUnpack(msg);
+  val.name = nameret.name;
+  val.nameRaw = nameret.raw;
   val.type = msg.readUInt16BE();
   val.class = msg.readUInt16BE();
   val.ttl = msg.readUInt32BE();
@@ -541,12 +760,11 @@ function parseRR(msg, val, rdata) {
 }
 
 function parseA(val, msg) {
-  var address = '' +
-    msg.readUInt8() +
-    '.' + msg.readUInt8() +
-    '.' + msg.readUInt8() +
-    '.' + msg.readUInt8();
-  val.address = address;
+  val.address = '' +
+      msg.readUInt8() +
+      '.' + msg.readUInt8() +
+      '.' + msg.readUInt8() +
+      '.' + msg.readUInt8();
   return PARSE_RESOURCE_DONE;
 }
 
@@ -564,7 +782,9 @@ function parseAAAA(val, msg) {
 }
 
 function parseCname(val, msg) {
-  val.data = nameUnpack(msg);
+  var nameret = nameUnpack(msg);
+  val.data = nameret.name;
+  val.dataRaw = nameret.raw;
   return PARSE_RESOURCE_DONE;
 }
 
@@ -580,7 +800,9 @@ function parseTxt(val, msg, rdata) {
 
 function parseMx(val, msg, rdata) {
   val.priority = msg.readUInt16BE();
-  val.exchange = nameUnpack(msg);
+  var nameret = nameUnpack(msg);
+  val.exchange = nameret.name;
+  val.exchangeRaw = nameret.raw;
   return PARSE_RESOURCE_DONE;
 }
 
@@ -590,13 +812,21 @@ function parseSrv(val, msg) {
   val.priority = msg.readUInt16BE();
   val.weight = msg.readUInt16BE();
   val.port = msg.readUInt16BE();
-  val.target = nameUnpack(msg);
+  var nameret = nameUnpack(msg);
+  val.target = nameret.name;
+  val.targetRaw = nameret.raw;
   return PARSE_RESOURCE_DONE;
 }
 
 function parseSoa(val, msg) {
-  val.primary = nameUnpack(msg);
-  val.admin = nameUnpack(msg);
+  var nameret = nameUnpack(msg);
+  val.primary = nameret.name;
+  val.primaryRaw = nameret.raw;
+
+  nameret = nameUnpack(msg);
+  val.admin = nameret.name;
+  val.adminRaw = nameret.raw;
+
   val.serial = msg.readUInt32BE();
   val.refresh = msg.readInt32BE();
   val.retry = msg.readInt32BE();
@@ -615,7 +845,10 @@ function parseNaptr(val, msg) {
   val.service = msg.toString('ascii', len);
   len = msg.readUInt8();
   val.regexp = msg.toString('ascii', len);
-  val.replacement = nameUnpack(msg);
+
+  var nameret = nameUnpack(msg);
+  val.replacement = nameret.name;
+  val.replacementRaw = nameret.raw;
   return PARSE_RESOURCE_DONE;
 }
 
@@ -658,6 +891,82 @@ function parseOpt(val, msg, rdata, packet) {
   return PARSE_RESOURCE_DONE;
 }
 
+function parseDs(val, msg, rdata) {
+  var startPos = msg.tell();
+  val.keytag = msg.readUInt16BE();
+  val.algorithm = msg.readUInt8();
+  val.digestType = msg.readUInt8();
+  val.digest = msg.slice(rdata.len - (msg.tell() - startPos));
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseRrsig(val, msg, rdata) {
+  var startPos = msg.tell();
+  val.typeCovered = msg.readUInt16BE();
+  val.algorithm = msg.readUInt8();
+  val.labels = msg.readUInt8();
+  val.originalTtl = msg.readUInt32BE();
+  val.signatureExpiration = new Date(msg.readUInt32BE() * 1000);
+  val.signatureInception = new Date(msg.readUInt32BE() * 1000);
+  val.keytag = msg.readUInt16BE();
+
+  var nameret = nameUnpack(msg);
+  val.signerName = nameret.name;
+  val.signerNameRaw = nameret.raw;
+
+  val.signature = msg.slice(rdata.len - (msg.tell() - startPos));
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseDnskey(val, msg, rdata) {
+  var startPos = msg.tell();
+  val.flags = msg.readUInt16BE();
+  val.protocol = msg.readUInt8();
+  val.algorithm = msg.readUInt8();
+  val.publicKey = msg.slice(rdata.len - (msg.tell() - startPos));
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseNsec(val, msg, rdata) {
+  var startPos = msg.tell();
+  var nameret = nameUnpack(msg);
+  val.next = nameret.name;
+  val.nextRaw = nameret.raw;
+  val.types = parseTypeBitmap(msg.slice(startPos + rdata.len - msg.tell()));
+
+  val.hasType = hasType;
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseNsec3(val, msg, rdata) {
+  var startPos = msg.tell();
+
+  val.hashAlgorithm = msg.readUInt8();
+  val.flags = msg.readUInt8();
+  val.iterations = msg.readUInt16BE();
+
+  var saltLen = msg.readUInt8();
+  val.salt = msg.slice(saltLen);
+
+  var hashLen = msg.readUInt8();
+  val.nextHashedOwnerName = msg.slice(hashLen);
+
+  val.types = parseTypeBitmap(msg.slice(startPos + rdata.len - msg.tell()));
+
+  val.hasType = hasType;
+  return PARSE_RESOURCE_DONE;
+}
+
+function parseNsec3param(val, msg) {
+  val.hashAlgorithm = msg.readUInt8();
+  val.flags = msg.readUInt8();
+  val.iterations = msg.readUInt16BE();
+
+  var nameret = nameUnpack(msg);
+  val.salt = nameret.name;
+  val.saltRaw = nameret.raw;
+}
+
 var
   PARSE_HEADER          = 100000,
   PARSE_QUESTION        = 100001,
@@ -665,20 +974,26 @@ var
   PARSE_RR_UNPACK       = 100003,
   PARSE_RESOURCE_DONE   = 100004,
   PARSE_END             = 100005,
-  PARSE_A     = consts.NAME_TO_QTYPE.A,
-  PARSE_NS    = consts.NAME_TO_QTYPE.NS,
-  PARSE_CNAME = consts.NAME_TO_QTYPE.CNAME,
-  PARSE_SOA   = consts.NAME_TO_QTYPE.SOA,
-  PARSE_PTR   = consts.NAME_TO_QTYPE.PTR,
-  PARSE_MX    = consts.NAME_TO_QTYPE.MX,
-  PARSE_TXT   = consts.NAME_TO_QTYPE.TXT,
-  PARSE_AAAA  = consts.NAME_TO_QTYPE.AAAA,
-  PARSE_SRV   = consts.NAME_TO_QTYPE.SRV,
-  PARSE_NAPTR = consts.NAME_TO_QTYPE.NAPTR,
-  PARSE_OPT   = consts.NAME_TO_QTYPE.OPT,
-  PARSE_SPF   = consts.NAME_TO_QTYPE.SPF,
-  PARSE_TLSA  = consts.NAME_TO_QTYPE.TLSA;
-  
+  PARSE_A          = consts.NAME_TO_QTYPE.A,
+  PARSE_NS         = consts.NAME_TO_QTYPE.NS,
+  PARSE_CNAME      = consts.NAME_TO_QTYPE.CNAME,
+  PARSE_SOA        = consts.NAME_TO_QTYPE.SOA,
+  PARSE_PTR        = consts.NAME_TO_QTYPE.PTR,
+  PARSE_MX         = consts.NAME_TO_QTYPE.MX,
+  PARSE_TXT        = consts.NAME_TO_QTYPE.TXT,
+  PARSE_AAAA       = consts.NAME_TO_QTYPE.AAAA,
+  PARSE_SRV        = consts.NAME_TO_QTYPE.SRV,
+  PARSE_NAPTR      = consts.NAME_TO_QTYPE.NAPTR,
+  PARSE_OPT        = consts.NAME_TO_QTYPE.OPT,
+  PARSE_DS         = consts.NAME_TO_QTYPE.DS,
+  PARSE_RRSIG      = consts.NAME_TO_QTYPE.RRSIG,
+  PARSE_DNSKEY     = consts.NAME_TO_QTYPE.DNSKEY,
+  PARSE_NSEC       = consts.NAME_TO_QTYPE.NSEC,
+  PARSE_NSEC3      = consts.NAME_TO_QTYPE.NSEC3,
+  PARSE_NSEC3PARAM = consts.NAME_TO_QTYPE.NSEC3PARAM,
+  PARSE_SPF        = consts.NAME_TO_QTYPE.SPF,
+  PARSE_TLSA       = consts.NAME_TO_QTYPE.TLSA;
+
 
 Packet.parse = function(msg) {
   var state,
@@ -764,6 +1079,24 @@ Packet.parse = function(msg) {
       case PARSE_NAPTR:
         state = parseNaptr(val, msg);
         break;
+      case PARSE_DS:
+        state = parseDs(val, msg, rdata);
+        break;
+      case PARSE_RRSIG:
+        state = parseRrsig(val, msg, rdata);
+        break;
+      case PARSE_DNSKEY:
+        state = parseDnskey(val, msg, rdata);
+        break;
+      case PARSE_NSEC:
+        state = parseNsec(val, msg, rdata);
+        break;
+      case PARSE_NSEC3:
+        state = parseNsec3(val, msg, rdata);
+        break;
+      case PARSE_NSEC3PARAM:
+        state = parseNsec3param(val, msg);
+        break;
       case PARSE_TLSA:
         state = parseTlsa(val, msg, rdata);
         break;
@@ -775,5 +1108,37 @@ Packet.parse = function(msg) {
         state = PARSE_RESOURCE_DONE;
         break;
     }
+  }
+};
+
+var buildDnssecRequestPacket = function (opts) {
+
+  var qtype;
+
+  qtype = opts.type || consts.NAME_TO_QTYPE.A;
+  if (typeof(qtype) === 'string' || qtype instanceof String)
+    qtype = consts.nameToQtype(qtype.toUpperCase());
+
+  if (!qtype || typeof(qtype) !== 'number')
+    throw new Error("Question type must be defined and be valid");
+
+  return {
+    answer: [],
+    authority: [],
+    additional: [],
+    do: true,
+    edns_options: [],
+    edns_version: 0,
+    header: {
+      id: 4326,
+      rd: 1
+    },
+    payload: 4096,
+    question: [{
+      name: opts.name,
+      type: qtype,
+      class: consts.NAME_TO_QCLASS.IN
+    }],
+    try_edns: true
   }
 };
