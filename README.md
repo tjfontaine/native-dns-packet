@@ -1,3 +1,7 @@
+> **⚠️ This project is archived and no longer maintained.**
+>
+> This was part of the [node-dns](https://github.com/tjfontaine/node-dns) ecosystem. See that repo for links to active forks.
+
 native-dns-packet
 -----------------
 
